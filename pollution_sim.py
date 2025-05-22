@@ -1,4 +1,5 @@
 from operator import index
+import time
 import matplotlib.pyplot as plt
 import argparse
 import numpy as np
@@ -19,7 +20,7 @@ def str2bool(v):
 NUM_CELLS = 50
 POLLUTANT_DETECTION_THRESHOLD = 0.05
 
-parser = argparse.ArgumentParser(prog='PDE Simulation', usage='%(PDE Simulation) [options]')
+parser = argparse.ArgumentParser(prog='PDE Simulation', usage='[options]')
 parser.add_argument('--useMatplot', type=str2bool, nargs='?', const=True, default=False, help='Enable matplot viewer for a lighter weight simulation')
 parser.add_argument('--useMayavi', type=str2bool, nargs='?', const=True, default=True, help='Disable/Enable viewer')
 parser.add_argument('--simSteps', type=int, default=300, help='Number of simulation steps')
@@ -81,9 +82,9 @@ pollutant_position_overtime_y = []
 pollutant_position_overtime_z = []
 
 for step in range(steps):
+    start_time = time.time()
     var.updateOld()
     eq.solve(var=var, dt=dt)
-    print(f"Step {step}")
     if useMatplot:
         num_cells = nx * ny * nz
         slice_z = num_cells/nz
@@ -182,7 +183,7 @@ for step in range(steps):
     elif viewer is not None:
         viewer.plot()
 
-
+    print(f"Step: {step}\nTime taken: {time.time() - start_time}")
 if viewer is not None:
     viewer.plot()
 input("Exit")
