@@ -1,9 +1,10 @@
+
 from operator import index
 import time
 import matplotlib.pyplot as plt
 import argparse
 import numpy as np
-from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm, Viewer
+from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm, Viewer, ImplicitSourceTerm
 from fipy.terms.transientTerm import TransientTerm
 
 def str2bool(v):
@@ -17,8 +18,8 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-NUM_CELLS = 50
-POLLUTANT_DETECTION_THRESHOLD = 0.05
+NUM_CELLS = 25
+POLLUTANT_DETECTION_THRESHOLD = 1e-1
 
 parser = argparse.ArgumentParser(prog='PDE Simulation', usage='[options]')
 parser.add_argument('--useMatplot', type=str2bool, nargs='?', const=True, default=False, help='Enable matplot viewer for a lighter weight simulation')
@@ -31,10 +32,12 @@ parser.add_argument('--zFlow', type=float, default=1.0, help='Flow in Z directio
 args = parser.parse_args()
 useMayavi = args.useMayavi
 useMatplot = args.useMatplot
+if(useMatplot):
+    useMayavi = False
 
 diffusionCoef = 0.1
 convectionCoef = (args.xFlow, args.yFlow, args.zFlow)
-dt = 0.01
+dt = 1/60
 steps = args.simSteps
 
 nx = ny = nz = NUM_CELLS # number of cells 
@@ -88,76 +91,20 @@ for step in range(steps):
     if useMatplot:
         num_cells = nx * ny * nz
         slice_z = num_cells/nz
-        body = np.array(var)
+        num_cells_in_grid = nx * ny * nz
 
-        values = np.array(var.value)
-        x_vals = np.array(x)
-        y_vals = np.array(y)
-        z_vals = np.array(z)
+        x_size = y_size = z_size = NUM_CELLS
 
-        x_unique = np.unique(x_vals)
-        avg_values_x_slice = []
+        values = var.value
+        values = np.array(values)
 
-        #Extracting average pollutant values across all x slices
-        for x_val in x_unique:
-            mask = np.isclose(x_vals, x_val)
-            avg_x = values[mask].mean()
-            avg_values_x_slice.append(avg_x)
+        positions = []
+        for idx, value in enumerate(values):
+            z = idx // (x_size * y_size)
+            y = (idx % (x_size * y_size)) // x_size
+            x = idx % x_size
+            positions.append(((x, y, z), value))
 
-        y_unique = np.unique(y_vals)
-        avg_values_y_slice = []
-
-        for y_val in y_unique:
-            mask = np.isclose(y_vals, y_val)
-            avg_y = values[mask].mean()
-            avg_values_y_slice.append(avg_y)
-
-        z_unique = np.unique(z_vals)
-        avg_values_z_slice = []
-
-        for z_val in z_unique:
-            mask = np.isclose(z_vals, z_val)
-            avg_z = values[mask].mean()
-            avg_values_z_slice.append(avg_z)
-
-        #List to store the 'grid' of the body of water which is used later to show pollutant positions
-        positions = np.linspace(0,1,NUM_CELLS)
-
-        #Get the index of the pollutant if greater than a threshold
-        for p in avg_values_x_slice:
-            if p > POLLUTANT_DETECTION_THRESHOLD:
-                #Index of the pollutant accross the x slice
-                index_of_pollutant = avg_values_x_slice.index(p)
-                pollutant_position_overtime_x.append(positions[index_of_pollutant])
-
-                #Get the indices of the max values of the other slices since consider these to be above the x axis threshold
-                current_y_position_index = avg_values_y_slice.index(max(avg_values_y_slice))
-                current_z_position_index = avg_values_z_slice.index(max(avg_values_z_slice))
-                pollutant_position_overtime_y.append(positions[current_y_position_index])
-                pollutant_position_overtime_z.append(positions[current_z_position_index])
-
-
-        for p in avg_values_y_slice:
-            if p > POLLUTANT_DETECTION_THRESHOLD:
-                index_of_pollutant = avg_values_y_slice.index(p)
-                pollutant_position_overtime_y.append(positions[index_of_pollutant])
-
-                current_x_position_index = avg_values_x_slice.index(max(avg_values_x_slice))
-                current_z_position_index = avg_values_z_slice.index(max(avg_values_z_slice))
-                pollutant_position_overtime_x.append(positions[current_x_position_index])
-                pollutant_position_overtime_z.append(positions[current_z_position_index])
-
-
-        for p in avg_values_z_slice:
-            if p > POLLUTANT_DETECTION_THRESHOLD:
-                index_of_pollutant = avg_values_z_slice.index(p)
-                pollutant_position_overtime_z.append(positions[index_of_pollutant])
-
-
-                current_x_position_index = avg_values_x_slice.index(max(avg_values_x_slice))
-                current_y_position_index = avg_values_y_slice.index(max(avg_values_y_slice))
-                pollutant_position_overtime_x.append(positions[current_x_position_index])
-                pollutant_position_overtime_y.append(positions[current_y_position_index])
 
         if fig is None:
             fig = plt.figure()
@@ -165,14 +112,27 @@ for step in range(steps):
         else:
             ax.clear()
 
+        x_filtered = []
+        y_filtered = []
+        z_filtered = []
+        values_filtered = []
 
-        ax.scatter(pollutant_position_overtime_x, pollutant_position_overtime_y, pollutant_position_overtime_z, label='pollutant')
+        for (x_val, y_val, z_val), v in positions:
+            if v >= POLLUTANT_DETECTION_THRESHOLD:
+                x_filtered.append(x_val)
+                y_filtered.append(y_val)
+                z_filtered.append(z_val)
+                values_filtered.append(v)
+
+
+        ax.scatter(x_filtered, y_filtered, z_filtered, c=values_filtered, cmap='plasma', s=20, label='plume')
+        # ax.scatter(positions[:,0], positions[:,1],positions[:,2]  label='pollutant')
         ax.set_title("Contaminated zone")
 
         ax.legend()
-        ax.set_xlim(0, L)
-        ax.set_ylim(0, L)
-        ax.set_zlim(0, L)
+        ax.set_xlim(0, NUM_CELLS)
+        ax.set_ylim(0, NUM_CELLS)
+        ax.set_zlim(0, NUM_CELLS)
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
         ax.set_zlabel('Z')
