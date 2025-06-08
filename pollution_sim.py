@@ -89,10 +89,6 @@ for step in range(steps):
     var.updateOld()
     eq.solve(var=var, dt=dt)
     if useMatplot:
-        num_cells = nx * ny * nz
-        slice_z = num_cells/nz
-        num_cells_in_grid = nx * ny * nz
-
         x_size = y_size = z_size = NUM_CELLS
 
         values = var.value
