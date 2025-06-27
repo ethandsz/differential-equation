@@ -18,16 +18,16 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-NUM_CELLS = 25
-POLLUTANT_DETECTION_THRESHOLD = 1e-1
+NUM_CELLS = 50
+POLLUTANT_DETECTION_THRESHOLD = 5e-3
 
 parser = argparse.ArgumentParser(prog='PDE Simulation', usage='[options]')
 parser.add_argument('--useMatplot', type=str2bool, nargs='?', const=True, default=False, help='Enable matplot viewer for a lighter weight simulation')
 parser.add_argument('--useMayavi', type=str2bool, nargs='?', const=True, default=True, help='Disable/Enable viewer')
 parser.add_argument('--simSteps', type=int, default=300, help='Number of simulation steps')
-parser.add_argument('--xFlow', type=float, default=0.0, help='Flow in X direction')
+parser.add_argument('--xFlow', type=float, default=1.0, help='Flow in X direction')
 parser.add_argument('--yFlow', type=float, default=0.0, help='Flow in Y direction')
-parser.add_argument('--zFlow', type=float, default=1.0, help='Flow in Z direction')
+parser.add_argument('--zFlow', type=float, default=0.0, help='Flow in Z direction')
 
 args = parser.parse_args()
 useMayavi = args.useMayavi
@@ -41,14 +41,30 @@ dt = 1/60
 steps = args.simSteps
 
 nx = ny = nz = NUM_CELLS # number of cells 
+
 L = 1.0
 dx = dy = dz = L / nx #grid spacing
 mesh = Grid3D(dx=dx, dy=dy, dz=dz, nx=nx, ny=ny, nz=nz)
 
 x, y, z = mesh.cellCenters
-sourceStrength = 1.0
-sourceRegion = ((x - L/2)**2 + (y - L/2)**2 + (z - 0.0)**2) < (0.5**2) 
 
+center_x = NUM_CELLS/2
+center_y = NUM_CELLS/2
+radius = NUM_CELLS
+
+
+sourceStrength = 2.0
+sourceRegion = []
+for idx in range(nx * ny * nz):
+    z_pos = idx // (nx * ny)
+    y_pos = (idx % (nx * ny)) // nx
+    x_pos = idx % nx
+# (x-center_x)^2 + (y - center_y)^2 < radius^2
+
+    if (x_pos < 10) and ((z_pos-center_x)**2 + (y_pos - center_y)**2 < radius):
+        sourceRegion.append(True)
+    else:
+        sourceRegion.append(False)
 
 var = CellVariable(mesh=mesh, name="pollutant", hasOld=True)
 source = CellVariable(name="source", mesh=mesh, value=0.0)
@@ -85,20 +101,20 @@ pollutant_position_overtime_y = []
 pollutant_position_overtime_z = []
 
 for step in range(steps):
+    input("Hit Enter to step forward")
     start_time = time.time()
     var.updateOld()
     eq.solve(var=var, dt=dt)
     if useMatplot:
-        x_size = y_size = z_size = NUM_CELLS
 
         values = var.value
         values = np.array(values)
 
         positions = []
         for idx, value in enumerate(values):
-            z = idx // (x_size * y_size)
-            y = (idx % (x_size * y_size)) // x_size
-            x = idx % x_size
+            z = idx // (nx * ny)
+            y = (idx % (nx * ny)) // nx
+            x = idx % nx
             positions.append(((x, y, z), value))
 
 
