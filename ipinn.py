@@ -14,7 +14,7 @@ from torch import Tensor                  # tensor node in the computation graph
 import torch.nn as nn                     # neural networks
 import torch.optim as optim               # optimizers e.g. gradient descent, ADAM, etc.
 
-NUM_TIMESTEPS = 25
+NUM_TIMESTEPS = 50
 
 class PINN(nn.Module):
     def __init__(self):
@@ -30,7 +30,8 @@ class PINN(nn.Module):
             nn.Tanh(),
             nn.Linear(20,1),
         )
-        self.delta = nn.Parameter(torch.rand(1, dtype=torch.float32))
+        # self.delta = nn.Parameter(torch.rand(1, dtype=torch.float32))
+        self.delta = nn.Parameter(torch.tensor([[0.1]]))
 
     def forward(self, x, y, z, t):
         # inputs = torch.cat([x,y,z,t], dim=1)
@@ -67,12 +68,12 @@ def pde_residual(x, y, z, t, model, sourceRegion):
     # source_value = sourceStrength if get_cartesian_value(source, x, y, z) == 1 else 0 
 
 
-    sourceRegion_tensor = torch.tensor(sourceRegion, dtype=torch.float32, device=device).view(-1,1)
+    # sourceRegion_tensor = torch.tensor(sourceRegion, dtype=torch.float32, device=device).view(-1,1)
 
-    source_values = sourceRegion_tensor.repeat(NUM_TIMESTEPS, 1)
+    # source_values = sourceRegion_tensor.repeat(NUM_TIMESTEPS, 1)
 # shape: [15625 * 50, 1] = [781250,1]
     
-    residual = c_t - model.delta.abs() * (c_xx + c_yy + c_zz) + (1*c_x) - source_values
+    residual = c_t - model.delta.abs() * (c_xx + c_yy + c_zz) + (1*c_x) - sourceRegion
 
     return residual
 
@@ -111,19 +112,12 @@ for idx in range(nx * ny * nz):
 
 #----------------------------------------------------------------------------------------------------
 
-x = torch.linspace(0,25, int(25/(1/25))).view(-1,1)
-y = torch.linspace(0,25,int(25/(1/25))).view(-1,1)
-z = torch.linspace(0,25,int(25/(1/25))).view(-1,1)
-t = torch.linspace(0,NUM_TIMESTEPS,NUM_TIMESTEPS+1).view(-1,1)
-
-print(t)
-
-x_train, y_train, z_train, t_train = torch.meshgrid(x.squeeze(), y.squeeze(), z.squeeze(), t.squeeze(), indexing="xy")
-
-x_train = x_train.reshape(-1,1)
-y_train = y_train.reshape(-1,1)
-z_train = z_train.reshape(-1,1)
-t_train = t_train.reshape(-1,1)
+# x_train, y_train, z_train, t_train = torch.meshgrid(x.squeeze(), y.squeeze(), z.squeeze(), t.squeeze(), indexing="xy")
+#
+# x_train = x_train.reshape(-1,1)
+# y_train = y_train.reshape(-1,1)
+# z_train = z_train.reshape(-1,1)
+# t_train = t_train.reshape(-1,1)
 
 
 all_values = np.load("tall-data.npy")
@@ -141,116 +135,120 @@ pollutant_values = np.array(pollutant_values)
 print(f"pollutant_values shape: {pollutant_values.shape}") # (300, 15625, 4) timestep, gridsize, xyz-concentration
 print(get_cartesian_value(pollutant_values[0], 5, 3, 6))
 
-
 #
-# x_data = torch.tensor()
-# y_data = torch.tensor()
-# z_data = torch.tensor()
-# t_data = torch.tensor()
-#
-
-x_data = x_train
-y_data = y_train
-z_data = z_train
-t_data = t_train
+x = torch.arange(0, NUM_CELLS, dtype=torch.float32)
+y = torch.arange(0, NUM_CELLS, dtype=torch.float32)
+z = torch.arange(0, NUM_CELLS, dtype=torch.float32)
+t = torch.arange(0, NUM_TIMESTEPS, dtype=torch.float32)
 
 
-c_data = torch.tensor(pollutant_values[:NUM_TIMESTEPS,:,3].reshape(-1,1), dtype=torch.float32).to(device)
-print(f"C data: {c_data.shape}")
+# Create meshgrid for all spatio-temporal points
+# Note: Using 'ij' indexing to match NumPy's default (z, y, x) order if you load data
+gz, gy, gx = torch.meshgrid(z, y, x, indexing='ij')
 
-x_data = x_data.to(device)
-y_data = y_data.to(device)
-z_data = z_data.to(device)
-t_data = t_data.to(device)
-c_data = c_data.to(device)
+# Flatten and repeat to create the full training data coordinates
+num_spatial_points = NUM_CELLS * NUM_CELLS * NUM_CELLS
+x_train = gx.flatten().repeat(NUM_TIMESTEPS).view(-1, 1)
+y_train = gy.flatten().repeat(NUM_TIMESTEPS).view(-1, 1)
+z_train = gz.flatten().repeat(NUM_TIMESTEPS).view(-1, 1)
+t_train = t.repeat_interleave(num_spatial_points).view(-1, 1)
 
-x_train = x_train.to(device)
-y_train = y_train.to(device)
-z_train = z_train.to(device)
-t_train = t_train.to(device)
+
+# Create the source term tensor for all spatio-temporal points
+sourceRegion = [s * sourceStrength for s in sourceRegion]
+source_map_spatial = torch.tensor(sourceRegion, dtype=torch.float32).view(-1, 1)
+source_values = source_map_spatial.repeat(NUM_TIMESTEPS, 1)
 
 
 model = PINN().to(device)
-optimizer = optim.Adam(model.parameters(), lr=1e-2)
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-num_epochs = 12000
-
-
-batch_size = 2048   # you can adjust; smaller if you still hit OOM
-
-num_epochs = 12000
-dataset_size = x_train.shape[0]
 
 source_values = torch.tensor(sourceRegion, dtype=torch.float32).view(-1,1)
 # Repeat over timesteps if needed (check your source logic)
 source_values = source_values.repeat(NUM_TIMESTEPS, 1).to(device)
 
+c_data = torch.tensor(all_values[:NUM_TIMESTEPS, :].flatten(), dtype=torch.float32).view(-1, 1)
+
+x_train = x_train.to(device)
+y_train = y_train.to(device)
+z_train = z_train.to(device)
+t_train = t_train.to(device)
+c_data = c_data.to(device)
+source_values = source_values.to(device)
+
+
+# Hyperparameters
+num_epochs = 12000
+batch_size = 4096 * 32 # Adjust based on your GPU memory
+dataset_size = x_train.shape[0]
+
+# --- 5. BATCHED TRAINING LOOP ---
+
+print("Starting training...")
+start_time = time.time()
+
 for epoch in range(num_epochs):
+    epoch_start_time = time.time()
+
     model.train()
-
-    # Shuffle indices (CPU tensor)
+    
+    # Shuffle indices for random batching
     indices = torch.randperm(dataset_size)
-
+    
     epoch_loss = 0.0
+    pde_loss = 0.0
+    data_loss = 0.0
 
     for i in range(0, dataset_size, batch_size):
-        batch_idx = indices[i:i+batch_size]   # keep on CPU
-
-        # Fetch data for this batch
+        batch_idx = indices[i:i+batch_size]
+        
+        # Get data for the current batch
         x_batch = x_train[batch_idx]
         y_batch = y_train[batch_idx]
         z_batch = z_train[batch_idx]
         t_batch = t_train[batch_idx]
         c_batch = c_data[batch_idx]
         source_batch = source_values[batch_idx]
-
-        # Compute residual (pde loss)
+        
+        # --- Calculate Losses ---
+        
+        # 1. PDE Loss (Physics Loss)
         residual = pde_residual(x_batch, y_batch, z_batch, t_batch, model, source_batch)
         loss_pde = torch.mean(residual**2)
-
-        # Predict concentration from model
+        
+        # 2. Data Loss (MSE Loss)
         c_pred = model(x_batch, y_batch, z_batch, t_batch)
-        loss_data = torch.mean((c_pred - c_batch) ** 2)
-
-        # Combine losses
-        loss = loss_pde + 100 * loss_data
-
+        loss_data = 1000 * torch.mean((c_pred - c_batch)**2)
+        
+        # Combine losses with a weighting factor
+        loss = loss_pde + loss_data
+        
+        # --- Backpropagation ---
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        
+        epoch_loss += loss.item() 
+        pde_loss += loss_pde
+        data_loss += loss_data
+        
+    avg_epoch_loss = epoch_loss / dataset_size
 
-        epoch_loss += loss.item()
-
-    print(f"Epoch [{epoch+1}/{num_epochs}] "
-          f"Loss: {epoch_loss:.6f} "
+    epoch_end_time = time.time()
+    
+    print(f"Epoch [{epoch+1}/{num_epochs}] | "
+          f"Loss: {epoch_loss:.6f} | "
+          f"Loss Pde: {pde_loss:.6f} | "
+          f"Loss Data: {data_loss:.6f} | "
+          f"Epoch time: {epoch_end_time - epoch_start_time} | "
+          f"Time Left: {(((epoch_end_time - epoch_start_time) * (num_epochs - epoch))/3600):2f} hours | "
           f"Delta: {model.delta.item():.6f}")
 
+# --- FIX: REMOVED THE SECOND, FULL-BATCH TRAINING LOOP ---
+# The following loop was the source of the out-of-memory error and has been removed.
+# It is redundant and computationally infeasible for large datasets.
 
-for epoch in range(num_epochs):
-    model.train()
-
-
-    residual = pde_residual(x_train, y_train, z_train, t_train, model, sourceRegion)
-    loss_pde = torch.mean(residual**2)
-    c_pred_data = model(x_data, y_data, z_data, t_data)
-    loss_data = torch.mean((c_pred_data - c_data) ** 2)
-
-    loss = loss_pde + 100*loss_data
-
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-    # for t_val in t_data:
-    #     for x_val in x_data:
-    #         for y_val in y_data:
-    #             for z_val in z_data:
-    #                 residual = pde_residual(x_val, y_val, z_val, t_val, model, sourceRegion)
-    #                 loss_pde = torch.mean(residual**2)
-    #                 c_pred_data = model(x_val, y_val, z_val, t_data)
-
-    print(f"Epoch: {epoch} Loss Pde: {loss_pde} Loss data: {loss_data} Delta: {model.delta.item():.6f}")
-
-
-
+total_time = time.time() - start_time
+print(f"Training finished in {total_time:.2f} seconds.")
 
