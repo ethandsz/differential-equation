@@ -1,6 +1,7 @@
 from utils import get_cartesian_concentration
 from operator import index
 import time
+from PollutionPDE import PollutionPDE
 import matplotlib.pyplot as plt
 import argparse
 import numpy as np
@@ -40,49 +41,15 @@ convectionCoef = (args.xFlow, args.yFlow, args.zFlow)
 dt = 1/60
 steps = args.simSteps
 
-nx = ny = nz = NUM_CELLS # number of cells 
+pde_problem = PollutionPDE(
+        num_cells=NUM_CELLS,
+        diffusion_coef=diffusionCoef,
+        convection_coef=convectionCoef
+    )
 
-L = 1.0
-dx = dy = dz = L / nx #grid spacing
-mesh = Grid3D(dx=dx, dy=dy, dz=dz, nx=nx, ny=ny, nz=nz)
-
-x, y, z = mesh.cellCenters
-
-center_x = NUM_CELLS/2
-center_y = NUM_CELLS/2
-radius = NUM_CELLS
-
-
-sourceStrength = 2.0
-sourceRegion = []
-for idx in range(nx * ny * nz):
-    z_pos = idx // (nx * ny)
-    y_pos = (idx % (nx * ny)) // nx
-    x_pos = idx % nx
-# (x-center_x)^2 + (y - center_y)^2 < radius^2
-
-    if (x_pos < 10) and ((z_pos-center_x)**2 + (y_pos - center_y)**2 < radius):
-        sourceRegion.append(True)
-    else:
-        sourceRegion.append(False)
-
-var = CellVariable(mesh=mesh, name="pollutant", hasOld=True)
-source = CellVariable(name="source", mesh=mesh, value=0.0)
-# print(source[:10])
-source.setValue(sourceStrength, where=sourceRegion)
-# source[:10] = 10.0
-# Boundary conditions
-var.constrain(0, mesh.facesTop)
-var.constrain(0, mesh.facesBottom)
-
-var.constrain(0, mesh.facesFront)#Z-bottom
-var.constrain(0, mesh.facesBack)#Z-top 
-
-var.constrain(0, mesh.facesLeft)
-var.constrain(0, mesh.facesRight)
-
-# Transient convection-diffusion equation
-eq = TransientTerm() == DiffusionTerm(coeff=diffusionCoef) - PowerLawConvectionTerm(coeff=convectionCoef,) + source
+# 2. Access the components
+var = pde_problem.get_variable()
+eq = pde_problem.get_equation()
 
 viewer = None
 if useMayavi:
@@ -93,6 +60,7 @@ elif useMatplot:
 
 fig = None
 ax = None
+cb = None        # will hold the current colorbar
 
 input("Start sim?")
 
@@ -104,8 +72,14 @@ for step in range(steps):
     start_time = time.time()
     var.updateOld()
     eq.solve(var=var, dt=dt)
+    # adv_residual = convection_term.justResidualVector(var=var)
+    # diff_residual = diffusion_term.justResidualVector(var=var)
+    residual = eq.justResidualVector(var=var, dt=dt)
+    print(len(var))
+    residual = np.array(residual)
+    print(np.sum(residual))
+    input("Step")
     if useMatplot:
-
         values = var.value
         values = np.array(values)
         # np.save("t73-data.npy", values)
@@ -118,9 +92,9 @@ for step in range(steps):
 
         positions = []
         for idx, value in enumerate(values):
-            z = idx // (nx * ny)
-            y = (idx % (nx * ny)) // nx
-            x = idx % nx
+            z = idx // (NUM_CELLS ** 2)
+            y = (idx % (NUM_CELLS ** 2)) // NUM_CELLS
+            x = idx % NUM_CELLS
             positions.append(((x, y, z), value))
 
         x_filtered = []
@@ -135,12 +109,16 @@ for step in range(steps):
                 z_filtered.append(z_val)
                 values_filtered.append(v)
 
+        if cb is not None:
+            cb.remove()
 
-        ax.scatter(x_filtered, y_filtered, z_filtered, c=values_filtered, cmap='plasma', s=20, label='plume')
+        sc = ax.scatter(x_filtered, y_filtered, z_filtered, c=values_filtered, cmap='plasma', s=20, label='plume')
         # print(f"X: {np.array(x_filtered).shape} Y: {y_filtered}, Z: {z_filtered}, C-Value: {np.array(values_filtered).shape}")
-        print(positions)
         # ax.scatter(positions[:,0], positions[:,1],positions[:,2]  label='pollutant')
         ax.set_title("Contaminated zone")
+
+        cb = fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.1)
+        cb.set_label('Concentration')
 
         ax.legend()
         ax.set_xlim(0, NUM_CELLS)
