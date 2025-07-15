@@ -16,139 +16,143 @@ import torch.nn as nn                     # neural networks
 import torch.optim as optim               # optimizers e.g. gradient descent, ADAM, etc.
 
 from PollutionPDE import PollutionPDE
+from torch.utils.data import Dataset, DataLoader
+
 
 NUM_TIMESTEPS = 1
 NUM_CELLS = 25
+
+class PollutionDataset(Dataset):
+    def __init__(self, data):
+        # data: list of ((x, y, z), c)
+        self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        (x, y, z, t), c = self.data[idx]
+        return torch.tensor([x, y, z, t], dtype=torch.float32), torch.tensor(c, dtype=torch.float32)
+
 
 class PINN(nn.Module):
     def __init__(self):
         super(PINN, self).__init__()
         self.hidden = nn.Sequential(
-            nn.Linear(4,20),
+            nn.Linear(4,256),
             nn.Tanh(),
-            nn.Linear(20,20),
+            nn.Linear(256,256),
             nn.Tanh(),
-            nn.Linear(20,20),
+            nn.Linear(256,256),
             nn.Tanh(),
-            nn.Linear(20,20),
+            nn.Linear(256,256),
             nn.Tanh(),
-            nn.Linear(20,1),
+            nn.Linear(256,256),
+            nn.Tanh(),
+            nn.Linear(256,256),
+            nn.Tanh(),
+            nn.Linear(256,256),
+            nn.Tanh(),
+            nn.Linear(256,256),
+            nn.Tanh(),
+            nn.Linear(256,256),
+            nn.Tanh(),
+            nn.Linear(256,256),
+            nn.Tanh(),
+            nn.Linear(256,256),
+            nn.Tanh(),
+            nn.Linear(256,256),
+            nn.Tanh(),
+            nn.Linear(256,1),
         )
-        # self.delta = nn.Parameter(torch.rand(1, dtype=torch.float32))
-        self.delta = nn.Parameter(torch.tensor([[0.9]]))
-        # self.source_region_param = torch.nn.Parameter(
-        #     torch.randn(NUM_TIMESTEPS*(NUM_CELLS**3), 1, dtype=torch.float32)  # or zeros, or something else
-        # )
+        self.delta = nn.Parameter(torch.tensor([[0.1]]))
 
-    def forward(self, x, y, z, t):
-        # inputs = torch.cat([x,y,z,t], dim=1)
+    def forward(self, coords):
+        # print("Forwarding ", coords)
 
-        print(f"x shape: {x.shape}")
-        print(f"y shape: {y.shape}")
-        print(f"z shape: {z.shape}")
-        print(f"t shape: {t.shape}")
-        inputs = torch.cat([x.view(-1,1), y.view(-1,1), z.view(-1,1), t.view(-1,1)], dim=1)
-        c = self.hidden(inputs)
-        return c
+        return self.hidden(coords).squeeze(-1)  # shape [batch_size]
 
-    # def get_source_region(self):
-    #     # Keep it positive or in [0,1]:
-    #     return torch.sigmoid(self.source_region_param)
+def normalize_c(c_val, c_min, c_max):
+    return (c_val - c_min) / (c_max - c_min)
+
+# Function to de-normalize (to check physical predictions later)
+def denormalize_c(c_norm, c_min, c_max):
+    return c_norm * (c_max - c_min) + c_min
 
 
-def pde_residual(x, y, z, t, model):
-    x.requires_grad = True
-    y.requires_grad = True
-    z.requires_grad = True
-    t.requires_grad = True
-
-    c = model(x,y,z,t)
-    #
-    c_t = torch.autograd.grad(c, t, torch.ones_like(c), create_graph=True)[0] #dc/dt
-
-    c_x = torch.autograd.grad(c, x, torch.ones_like(c), create_graph=True)[0] #dc/dx
-    c_y = torch.autograd.grad(c, y, torch.ones_like(c), create_graph=True)[0] #dc/dy
-    c_z = torch.autograd.grad(c, z, torch.ones_like(c), create_graph=True)[0] #dc/dz
+def generate_bc_inputs(input_tensor, axis_idx, value):
+    bc_face = torch.clone(input_tensor)
+    bc_face[:,axis_idx] = value
+    bc_face = torch.unique(bc_face, dim=0)
+    return bc_face
 
 
-    c_xx = torch.autograd.grad(c_x, x, torch.ones_like(c), create_graph=True)[0] #d^2c/d^2x
-    c_yy = torch.autograd.grad(c_y, y, torch.ones_like(c), create_graph=True)[0] #d^2c/d^2y
-    c_zz = torch.autograd.grad(c_z, z, torch.ones_like(c), create_graph=True)[0] #d^2c/d^2z
+def pde_residual(coords, model):
+    coords.requires_grad = True
+
+    domain_min = torch.tensor([0.0, 0.0, 0.0], device=coords.device)
+    domain_max = torch.tensor([24.0, 24.0, 24.0], device=coords.device)
+
+    coords_spatial = coords[:, :3]
+    coords_min = torch.zeros_like(coords_spatial)
+    coords_max = torch.full_like(coords_spatial, 24.0)
+
+    coords_spatial_norm = (coords_spatial - coords_min) / (coords_max - coords_min)
+
+    # Time coordinate: fixed at 4/60
+    t_fixed = coords[:, -1:]  # keep as is
+
+    # Concatenate normalized spatial coords and time
+    coords_norm = torch.cat([coords_spatial_norm, t_fixed], dim=1)
 
 
+    c = model(coords_norm)
+
+    grads = torch.autograd.grad(
+        c, coords_norm,
+        grad_outputs=torch.ones_like(c),
+        create_graph=True
+    )[0]  # shape [batch_size, 4]
+
+    L = domain_max - domain_min
+
+    # Split gradients into components
+    c_x = grads[:, 0] 
+    c_y = grads[:, 1] 
+    c_z = grads[:, 2] 
+    c_t = grads[:, 3]
+
+    # Second derivatives
+    grads_x = torch.autograd.grad(
+        c_x, coords_norm,
+        grad_outputs=torch.ones_like(c_x),
+        create_graph=True
+    )[0]
+    c_xx = grads_x[:, 0]
+
+    grads_y = torch.autograd.grad(
+        c_y, coords_norm,
+        grad_outputs=torch.ones_like(c_y),
+        create_graph=True
+    )[0]
+    c_yy = grads_y[:, 1]
+
+    grads_z = torch.autograd.grad(
+        c_z, coords_norm,
+        grad_outputs=torch.ones_like(c_z),
+        create_graph=True
+    )[0]
+    c_zz = grads_z[:, 2]
+   #
     pde_problem = PollutionPDE(
             num_cells=NUM_CELLS,
             diffusion_coef=0.1,
             convection_coef=(1.0,0.0,0.0)
         )
 
-# 2. Access the components
-    var = pde_problem.get_variable()
-    eq = pde_problem.get_equation()
-
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     source = torch.tensor(pde_problem.get_source().value).to(device)
-
-#
-#     print(model.delta.abs().item())
-#
-#     pde_problem = PollutionPDE(
-#             num_cells=25,
-#             diffusion_coef=model.delta.abs().item(),
-#             convection_coef=(1.0,0.0,0.0)
-#         )
-#
-# # 2. Access the components
-#     # var = pde_problem.get_variable()
-#     c_flattened = c.cpu().detach().numpy().flatten()
-#
-#     residual_total = 0
-#     total_values = NUM_CELLS ** 3
-#     for t in range(NUM_TIMESTEPS):
-#         eq = pde_problem.get_equation()
-#         mesh = pde_problem.get_mesh()
-#         predicted_var = CellVariable(name="pred_poll", mesh=mesh, value=c_flattened[t*total_values:(t+1)*total_values])
-#         residual = eq.sweep(var=predicted_var, dt=1/60 * (t+1))
-#         # print(f"Residual Error: {residual}")
-#         residual_total += residual
-#
-#
-#
-#     # print(f"x: {x.shape}")
-#     # print(f"source: {source.shape}")
-#     # print(f"c: {c.shape}")
-#
-#     # sourceStrength = 2.0
-#     # source_value = sourceStrength if get_cartesian_value(source, x, y, z) == 1 else 0 
-#
-#
-#     # sourceRegion_tensor = torch.tensor(sourceRegion, dtype=torch.float32, device=device).view(-1,1)
-#
-#     # source_values = sourceRegion_tensor.repeat(NUM_TIMESTEPS, 1)
-# # shape: [15625 * 50, 1] = [781250,1]
-#
-#     print(f"Diffusion part { torch.sum(model.delta.abs() * (c_xx + c_yy + c_zz)) }")
-#     print(f"Convection part { torch.sum(1*c_x) }")
-#     print(f"Source part {torch.sum(sourceRegion)}")
-#     pred = model.delta.abs() * (c_xx + c_yy + c_zz) - (1*c_x) + sourceRegion
-
-
-    # residual_total = 0
-    # total_values = NUM_CELLS ** 3
-    # for t in range(NUM_TIMESTEPS):
-    #
-    #     idx_start = t*total_values
-    #     idx_end = (t+1)*total_values
-    #
-    #     print(f"pred: {torch.sum(c[idx_start:idx_end])}")
-    #     print(f"diffusion part: {torch.sum(model.delta.abs() * (c_xx[idx_start:idx_end] + c_yy[idx_start:idx_end] + c_zz[idx_start:idx_end]))}")
-    #     print(f"advection part: {torch.sum(1*c_x[idx_start:idx_end])}")
-    #     print(f"source part: {torch.sum(source)}")
-    #     residual = c[idx_start:idx_end] - (model.delta.abs() * (c_xx[idx_start:idx_end] + c_yy[idx_start:idx_end] + c_zz[idx_start:idx_end])) + (1*c_x[idx_start:idx_end]) - model.sourceRegion.abs()
-    #     residual_total += torch.mean(residual**2)
-        
-    
 
     print(f"c_t {torch.sum(c_t)}")
     print(f"c sum: {torch.sum(c)}")
@@ -164,10 +168,38 @@ def pde_residual(x, y, z, t, model):
     print(f"Sum c_yy: {torch.sum(c_yy).item()}")
     print(f"Sum c_zz: {torch.sum(c_zz).item()}")
 
-    residual = c_t/1000 - ((model.delta.abs() * (c_xx + c_yy + c_zz)) * 10) + (10*(1*c_x)) - source/1000 #(2 * model.source_region_param.abs())
+
+    laplacian = c_xx + c_yy + c_zz
+
+    Ux, Uy, Uz = [-1.0, 0.0, 0.0]
+
+    convection = Ux * c_x + Uy * c_y + Uz * c_z
+
+
+    idx = 0
+    print(f"Sum of laplacian {laplacian}")
+    print(f"source {source[idx]}")
+    print(f"C-wrt[{idx}] {c_t[idx]}")
+    print(f"C-x[{idx}] {c_x[idx]}")
+    print(f"C-y[{idx}] {c_y[idx]}")
+    print(f"C-z[{idx}] {c_z[idx]}")
+    
+
+    print(f"Residual with right coef at idx({idx})= {c_t[idx]} - {0.6*laplacian[idx]} + {c_x[idx]} + {source[idx]} = {torch.sum(c_t[idx] - 0.6*laplacian[idx] + c_x[idx] + source[idx])}")
+    print(f"Residual with right coef = {c_t} - {0.6*laplacian} + {c_x} + {source} = {torch.sum(c_t - 0.6*laplacian + c_x + source)}")
+
+
+
+    # PDE residual:
+    residual = c_t - (model.delta.abs() * laplacian - convection + source)
+    # residual = (c_t / source) - \
+    #            (model.delta.abs() * laplacian - (convection / source) + 1.0)
+
+    # residual = c_t - ((model.delta.abs() * (c_xx + c_yy + c_zz))) + ((1*c_x)) - source #(2 * model.source_region_param.abs())
+
+    print(f"Residual error: {torch.sum(residual)}")
 
     return torch.mean(residual**2)
-    return residual_total
 
 if __name__ == "__main__":
 
@@ -178,188 +210,158 @@ if __name__ == "__main__":
     if device == 'cuda': 
         print(torch.cuda.get_device_name()) 
 
-
-#----------------------------------------------------------------------------------------------------
-
-
-    nx = ny = nz = 25
-
-    center_x = NUM_CELLS/2
-    center_y = NUM_CELLS/2
-    radius = NUM_CELLS
-
-
-    sourceStrength = 2.0
-    sourceRegion = []
-    for idx in range(nx * ny * nz):
-        z_pos = idx // (nx * ny)
-        y_pos = (idx % (nx * ny)) // nx
-        x_pos = idx % nx
-
-        if (x_pos < 10) and ((z_pos-center_x)**2 + (y_pos - center_y)**2 < radius):
-            sourceRegion.append(True)
-        else:
-            sourceRegion.append(False)
-
-
-
-#----------------------------------------------------------------------------------------------------
-
-# x_train, y_train, z_train, t_train = torch.meshgrid(x.squeeze(), y.squeeze(), z.squeeze(), t.squeeze(), indexing="xy")
-#
-# x_train = x_train.reshape(-1,1)
-# y_train = y_train.reshape(-1,1)
-# z_train = z_train.reshape(-1,1)
-# t_train = t_train.reshape(-1,1)
-
-
     all_values = np.load("tall-data.npy")
-    print(all_values.shape)
+    training_data = all_values[2:10,:]
+    print(training_data)
+    c_min = np.min(training_data)
+    c_max = np.max(training_data)
 
-    pollutant_values = []
-    #
-    # steps, _ = all_values.shape
-    # for step in range(steps):
-    #     value_t = all_values[step, :]
-    #     pollutant_value = get_cartesian_concentration(value_t, 25)
-    #     pollutant_values.append(pollutant_value)
-    #
+    data = []
+    # all_values[4,:]
 
-    value_t = all_values[2, :]
-    pollutant_value = get_cartesian_concentration(value_t, 25)
-    pollutant_values.append(pollutant_value)
+    for step, _ in enumerate(training_data):
+        for idx, value in enumerate(training_data[step]):
+            z = idx // (NUM_CELLS ** 2)
+            y = (idx % (NUM_CELLS ** 2)) // NUM_CELLS
+            x = idx % NUM_CELLS
 
-    pollutant_values = np.array(pollutant_values)
-    print(f"pollutant_values shape: {pollutant_values.shape}") # (300, 15625, 4) timestep, gridsize, xyz-concentration
+            physical_c = value
+            normalized_c = normalize_c(physical_c, c_min, c_max) # Use the normalized value
 
-#
-    x = torch.arange(0, NUM_CELLS,  dtype=torch.float32)
-    y = torch.arange(0, NUM_CELLS,  dtype=torch.float32)
-    z = torch.arange(0, NUM_CELLS,  dtype=torch.float32)
-    t = torch.arange(0, 1/60, 1/60, dtype=torch.float32)
+            data.append(((x, y, z, step * 1/60), normalized_c))
+        print(step * 1/60)
 
+    for d in data:
+        print(d)
 
-# Create meshgrid for all spatio-temporal points
-# Note: Using 'ij' indexing to match NumPy's default (z, y, x) order if you load data
-#     gz, gy, gx = torch.meshgrid(z, y, x, indexing='ij')
-#
-# # Flatten and repeat to create the full training data coordinates
-    num_spatial_points = NUM_CELLS * NUM_CELLS * NUM_CELLS
-#     x_train = gx.flatten().repeat(NUM_TIMESTEPS).view(-1, 1)
-#     y_train = gy.flatten().repeat(NUM_TIMESTEPS).view(-1, 1)
-#     z_train = gz.flatten().repeat(NUM_TIMESTEPS).view(-1, 1)
-
-    zz, yy, xx = torch.meshgrid(z, y, x, indexing='ij')  # shape: (25,25,25)
-
-# Flatten to (15625, 1)
-    x_train = xx.reshape(-1,1)
-    y_train = yy.reshape(-1,1)
-    z_train = zz.reshape(-1,1)
-
-# Repeat for timesteps if you have multiple timesteps
-    t_train = t.repeat_interleave(NUM_CELLS**3).view(-1,1)  # shape: (15625,1) if NUM_TIMESTEPS=1
-
-
-# Create the source term tensor for all spatio-temporal points
-    sourceRegion = [s * sourceStrength for s in sourceRegion]
-    source_map_spatial = torch.tensor(sourceRegion, dtype=torch.float32).view(-1, 1)
-    source_values = source_map_spatial.repeat(NUM_TIMESTEPS, 1)
+    dataset = PollutionDataset(data)
+    loader = DataLoader(dataset, batch_size=15625, shuffle=True)
 
 
     model = PINN().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-2)
+    # Optimizer for the neural network weights with a smaller learning rate
+    optimizer_net = optim.Adam(model.hidden.parameters(), lr=1e-3)
+    # Optimizer specifically for the delta parameter with a LARGER learning rate
+    optimizer_delta = optim.Adam([model.delta], lr=1e-3)
 
+    # Hyperparameters
+    num_epochs = 100000
 
-    source_values = torch.tensor(sourceRegion, dtype=torch.float32).view(-1,1)
-# Repeat over timesteps if needed (check your source logic)
-    source_values = source_values.repeat(NUM_TIMESTEPS, 1).to(device)
-
-    c_data = torch.tensor(all_values[4, :].flatten(), dtype=torch.float32).view(-1, 1)
-
-    print(f"C data shape: {c_data.shape}")
-
-    x_train = x_train.to(device)
-    y_train = y_train.to(device)
-    z_train = z_train.to(device)
-    t_train = t_train.to(device)
-    c_data = c_data.to(device)
-    source_values = source_values.to(device)
-
-
-# Hyperparameters
-    num_epochs = 12000
-    # batch_size = 4096 * 32 # Adjust based on your GPU memory
-    dataset_size = x_train.shape[0]
-
-# --- 5. BATCHED TRAINING LOOP ---
 
     print("Starting training...")
     start_time = time.time()
 
-    for epoch in range(num_epochs):
-        epoch_start_time = time.time()
+    pde_loss_over_time = []
+    data_loss_over_time = []
+    delta_values_over_time = []
 
-        model.train()
-        
-        # Shuffle indices for random batching
-        indices = torch.randperm(dataset_size)
-        
-        epoch_loss = 0.0
-        pde_loss = 0.0
-        data_loss = 0.0
+    best_loss = float('inf')
 
-        for i in range(0, 1):
-            
-            # Get data for the current batch
-            x_batch = x_train
-            y_batch = y_train
-            z_batch = z_train
-            t_batch = t_train
-            c_batch = c_data
-            source_batch = source_values
-            
-            # --- Calculate Losses ---
-            
-            # 1. PDE Loss (Physics Loss)
-            residual = pde_residual(x_batch, y_batch, z_batch, t_batch, model, )
-            loss_pde = 10 * residual #torch.mean(residual**2)
-            print(f"loss_pde: {loss_pde}")
-            
-            # 2. Data Loss (MSE Loss)
-            c_pred = model(x_batch, y_batch, z_batch, t_batch)
-            print(c_pred.shape)
-            print(c_batch.shape)
-            loss_data = 100 * torch.mean((c_pred - c_batch)**2)
-            
-            # Combine losses with a weighting factor
-            loss = loss_pde + loss_data
-            
-            # --- Backpropagation ---
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            epoch_loss += loss.item() 
-            pde_loss += loss_pde
-            data_loss += loss_data
-            
-        avg_epoch_loss = epoch_loss / dataset_size
+    try:
+        for epoch in range(num_epochs):
+            epoch_start_time = time.time()
 
-        epoch_end_time = time.time()
-        
-        print(f"Epoch [{epoch+1}/{num_epochs}] | "
-              f"Loss: {epoch_loss:.6f} | "
-              f"Loss Pde: {pde_loss:.6f} | "
-              f"Loss Data: {data_loss:.6f} | "
-            f"Epoch time (s): {(epoch_end_time - epoch_start_time):.1f} | "
-              f"Time Left: {(((epoch_end_time - epoch_start_time) * (num_epochs - epoch))/3600):2f} hours | "
-              f"Delta: {model.delta.item():.6f} | ")
+            model.train()
+            
+            epoch_loss = 0.0
+            pde_loss_total = 0.0
+            data_loss_total = 0.0
 
-# --- FIX: REMOVED THE SECOND, FULL-BATCH TRAINING LOOP ---
-# The following loop was the source of the out-of-memory error and has been removed.
-# It is redundant and computationally infeasible for large datasets.
+            for coords, c in loader:
+                coords = coords.to(device)
 
-    total_time = time.time() - start_time
-    print(f"Training finished in {total_time:.2f} seconds.")
+                c_pred_left = model(generate_bc_inputs(coords, 0, 0))
+                c_pred_right = model(generate_bc_inputs(coords, 0, 24))
 
-    torch.save(model.state_dict(), "model.pth")
+                c_pred_bottom = model(generate_bc_inputs(coords, 1, 0))
+                c_pred_top = model(generate_bc_inputs(coords, 1, 24))
+
+                c_pred_front = model(generate_bc_inputs(coords, 2, 0))
+                c_pred_back = model(generate_bc_inputs(coords, 2, 24))
+
+
+                loss_bc = torch.mean((c_pred_left - torch.full_like(c_pred_left, 0))**2) + \
+                            torch.mean((c_pred_right - torch.full_like(c_pred_right, 0))**2) + \
+                            torch.mean((c_pred_bottom - torch.full_like(c_pred_bottom, 0))**2) + \
+                            torch.mean((c_pred_top - torch.full_like(c_pred_top, 0))**2) + \
+                            torch.mean((c_pred_front - torch.full_like(c_pred_front, 0))**2) + \
+                            torch.mean((c_pred_back - torch.full_like(c_pred_back, 0))**2)
+
+                c = c.to(device)
+                optimizer_net.zero_grad()
+
+                optimizer_delta.zero_grad()
+                c_pred = model(coords)  # coords shape: [batch_size, 3]
+
+                data_loss = torch.mean((c_pred - c) ** 2) + loss_bc
+
+
+                if(epoch % 50 == 0):
+                    pde_loss = pde_residual(coords, model, )
+                    loss = data_loss + pde_loss
+                    loss.backward()
+                    optimizer_delta.step()
+                    optimizer_net.step()
+
+                    pde_loss_total += pde_loss
+                    pde_loss_over_time.append(pde_loss_total)
+
+                else:
+                    loss = data_loss
+                    loss.backward()
+                    optimizer_net.step()
+
+                epoch_loss += loss.item() 
+
+                data_loss_total += data_loss
+
+            data_loss_over_time.append(data_loss_total)
+            delta_values_over_time.append(model.delta.item())
+               
+
+            epoch_end_time = time.time()
+            
+            print(f"Epoch [{epoch+1}/{num_epochs}] | "
+                  f"Loss: {epoch_loss:.6f} | "
+                  f"Loss Pde: {pde_loss_total:.6f} | "
+                  f"Loss Data: {data_loss_total:.6f} | "
+                f"Epoch time (s): {(epoch_end_time - epoch_start_time):.1f} | "
+                  f"Time Left: {(((epoch_end_time - epoch_start_time) * (num_epochs - epoch))/3600):2f} hours | "
+                  f"Delta: {model.delta.item():.6f} | ")
+
+            if epoch_loss < best_loss:
+                best_loss = epoch_loss
+                torch.save(model.state_dict(), 'best_model.pth')
+                print(f"Best model saved at epoch {epoch+1} with val loss {epoch_loss:.4f}")
+
+        total_time = time.time() - start_time
+        print(f"Training finished in {total_time:.2f} seconds.")
+    except KeyboardInterrupt:
+        print("Training killed")
+
+    finally:
+# Convert tensors to floats if they are still tensors
+        pde_loss_over_time = [loss.item() if isinstance(loss, torch.Tensor) else loss for loss in pde_loss_over_time]
+        data_loss_over_time = [loss.item() if isinstance(loss, torch.Tensor) else loss for loss in data_loss_over_time]
+
+# Create a figure with two subplots: losses and delta
+        fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+# Plot losses
+        axs[0].plot(pde_loss_over_time, label='PDE Loss', color='tab:blue')
+        axs[0].plot(data_loss_over_time, label='Data Loss', color='tab:orange')
+        axs[0].set_ylabel('Loss Value')
+        axs[0].set_title('Training Losses Over Time')
+        axs[0].legend()
+        axs[0].grid(True)
+
+# Plot delta values separately
+        axs[1].plot(delta_values_over_time, label='Delta Parameter', color='tab:green')
+        axs[1].set_xlabel('Epoch')
+        axs[1].set_ylabel('Delta Value')
+        axs[1].set_title('Delta Parameter Over Time')
+        axs[1].legend()
+        axs[1].grid(True)
+
+        plt.tight_layout()
+        plt.show()
