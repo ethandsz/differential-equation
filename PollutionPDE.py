@@ -2,7 +2,7 @@
 #!/usr/bin/env python3
 from typing import Tuple
 import numpy as np
-from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm
+from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm, FixedValue
 from fipy.terms.transientTerm import TransientTerm
 
 class PollutionPDE:
@@ -24,7 +24,7 @@ class PollutionPDE:
         
         # Instance variables to be populated by setup_pde
         self.mesh = None
-        self.var = None
+        self.pollution_var = None
         self.eq = None
         
         # Run the setup
@@ -58,23 +58,38 @@ class PollutionPDE:
         source_region[mask] = True
 
         # Define the cell variables
-        self.var = CellVariable(mesh=self.mesh, name="pollutant", hasOld=True)
-        source = CellVariable(name="source", mesh=self.mesh, value=0.0)
-        source.setValue(source_strength, where=source_region)
+        self.pollution_var = CellVariable(mesh=self.mesh, name="pollutant", hasOld=True)
+        self.source = CellVariable(name="source", mesh=self.mesh, value=0.0)
+        self.source.setValue(source_strength, where=source_region)
+        print(f"Source Sum: {np.sum(np.array(self.source.value))}")
 
+        print(self.mesh.facesTop)
         # Boundary conditions (concentration is zero at all boundaries)
-        self.var.constrain(0, self.mesh.facesTop)
-        self.var.constrain(0, self.mesh.facesBottom)
-        self.var.constrain(0, self.mesh.facesFront) # Z-bottom
-        self.var.constrain(0, self.mesh.facesBack)  # Z-top
-        self.var.constrain(0, self.mesh.facesLeft)
-        self.var.constrain(0, self.mesh.facesRight)
+        self.pollution_var.constrain(0, self.mesh.facesTop) #Y-Max
+        self.pollution_var.constrain(0, self.mesh.facesBottom) #Y-Min
+        self.pollution_var.constrain(0, self.mesh.facesFront) # Z-bottom
+        self.pollution_var.constrain(0, self.mesh.facesBack)  # Z-top
+        self.pollution_var.constrain(0, self.mesh.facesLeft) #X-min
+        self.pollution_var.constrain(0, self.mesh.facesRight) #X-Max
 
         # Define the transient convection-diffusion equation
         diffusion_term = DiffusionTerm(coeff=self.diffusion_coef)
         convection_term = PowerLawConvectionTerm(coeff=self.convection_coef)
         
-        self.eq = TransientTerm() == diffusion_term - convection_term + source
+        self.eq = TransientTerm() == diffusion_term - convection_term + self.source
+
+
+
+    def sweep_eq(self, dt) -> float:
+        """
+        Solves and returns the residual error for the equation.
+
+        Returns:
+            Float: residual error.
+        """
+
+        res = self.eq.sweep(var=self.get_variable(), dt=dt)
+        return res
 
     def get_mesh(self) -> Grid3D:
         """
@@ -92,8 +107,10 @@ class PollutionPDE:
         Returns:
             CellVariable: The FiPy variable for the pollutant.
         """
-        return self.var
+        return self.pollution_var
 
+    def get_source(self) -> CellVariable:
+        return self.source
 
     def get_equation(self):
         """
