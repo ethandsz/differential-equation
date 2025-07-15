@@ -36,7 +36,7 @@ useMatplot = args.useMatplot
 if(useMatplot):
     useMayavi = False
 
-diffusionCoef = 0.1
+diffusionCoef = 0.6
 convectionCoef = (args.xFlow, args.yFlow, args.zFlow)
 dt = 1/60
 steps = args.simSteps
@@ -71,13 +71,14 @@ all_values = np.zeros((steps,NUM_CELLS**3))
 for step in range(steps):
     start_time = time.time()
     var.updateOld()
-    eq.solve(var=var, dt=dt)
+    # rse = eq.sweep(var=var, dt=dt)
+    rse = pde_problem.sweep_eq(dt)
     # adv_residual = convection_term.justResidualVector(var=var)
     # diff_residual = diffusion_term.justResidualVector(var=var)
     residual = eq.justResidualVector(var=var, dt=dt)
-    print(len(var))
     residual = np.array(residual)
-    print(np.sum(residual))
+
+    print(np.sum(np.array(var.value)))
     input("Step")
     if useMatplot:
         values = var.value
@@ -95,14 +96,14 @@ for step in range(steps):
             z = idx // (NUM_CELLS ** 2)
             y = (idx % (NUM_CELLS ** 2)) // NUM_CELLS
             x = idx % NUM_CELLS
-            positions.append(((x, y, z), value))
+            positions.append(((x, y, z, step * dt), value))
 
         x_filtered = []
         y_filtered = []
         z_filtered = []
         values_filtered = []
 
-        for (x_val, y_val, z_val), v in positions:
+        for (x_val, y_val, z_val, _), v in positions:
             if v >= POLLUTANT_DETECTION_THRESHOLD:
                 x_filtered.append(x_val)
                 y_filtered.append(y_val)
@@ -144,6 +145,7 @@ if fig is not None:
     plt.close(fig)
 #
 
+np.save("tall-data.npy", all_values)
 simulation_steps, _ = all_values.shape
 for step in range(simulation_steps):
     concentration_values = get_cartesian_concentration(all_values[step, :], NUM_CELLS)
