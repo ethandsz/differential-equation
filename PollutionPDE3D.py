@@ -1,15 +1,16 @@
 
+
 #!/usr/bin/env python3
 from typing import Tuple
 import numpy as np
-from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm, FixedValue
+from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm, FixedValue, FaceVariable
 from fipy.terms.transientTerm import TransientTerm
 
-class PollutionPDE:
+class PollutionPDE3D:
     """
     A class to set up and manage a 3D pollution diffusion-convection PDE using FiPy.
     """
-    def __init__(self, num_cells: int, diffusion_coef: float, convection_coef: Tuple[float, float, float]):
+    def __init__(self, num_cells: int, diffusion_coef: float, convection_coef: Tuple[float,float, float]):
         """
         Initializes the PollutionPDE simulation.
 
@@ -27,6 +28,7 @@ class PollutionPDE:
         self.pollution_var = None
         self.eq = None
         
+        self.source = None
         # Run the setup
         self.setup_pde()
 
@@ -38,45 +40,58 @@ class PollutionPDE:
         nx = ny = nz = self.num_cells
         L = 1.0
         dx = dy = dz = L / nx
-        self.mesh = Grid3D(dx=dx, dy=dy, dz=dz, nx=nx, ny=ny, nz=nz)
+        self.mesh = Grid3D(dx=dx, dy=dy, dz=dz,  nx=nx, ny=ny, nz= nz)
 
-        # Define the pollution source region
-        center_x = self.num_cells / 2
-        center_y = self.num_cells / 2
-        radius = self.num_cells / 3 # Made radius slightly smaller for a more defined source
         
-        source_strength = 2.0
+        source_strength = 20.0
         source_region = np.zeros(self.mesh.numberOfCells, dtype=bool)
+
+        x_coords = self.mesh.cellCenters[0]
+        y_coords = self.mesh.cellCenters[1]
+        z_coords = self.mesh.cellCenters[2]
+
+        center_x = 0.1
+        center_y = 0.5
+        center_z = 0.5
+
+        radius = 0.05  # adjust as needed
+
+        distance_squared = (x_coords - center_x)**2 + (y_coords - center_y)**2 + (z_coords - center_z)**2
+
+        source_region = distance_squared < radius**2
+
         
         # Vectorized way to define the cylindrical source region for efficiency
-        x_coords, y_coords, z_coords = self.mesh.cellCenters
-        x_indices = (x_coords / dx).astype(int)
-        y_indices = (y_coords / dy).astype(int)
-        z_indices = (z_coords / dz).astype(int)
-
-        mask = (x_indices < 10) & ((z_indices - center_x)**2 + (y_indices - center_y)**2 < radius**2)
-        source_region[mask] = True
+        # x_coords = self.mesh.cellCenters
+        #
+        # mask = (x_indices < 10)         
+        # source_region[mask] = True
+        #
 
         # Define the cell variables
         self.pollution_var = CellVariable(mesh=self.mesh, name="pollutant", hasOld=True)
         self.source = CellVariable(name="source", mesh=self.mesh, value=0.0)
         self.source.setValue(source_strength, where=source_region)
-        print(f"Source Sum: {np.sum(np.array(self.source.value))}")
+        # print(f"Source Sum: {np.sum(np.array(self.source.value))}")
 
-        print(self.mesh.facesTop)
+        velocity = FaceVariable(mesh=self.mesh, rank=1, value=self.convection_coef)
         # Boundary conditions (concentration is zero at all boundaries)
-        self.pollution_var.constrain(0, self.mesh.facesTop) #Y-Max
-        self.pollution_var.constrain(0, self.mesh.facesBottom) #Y-Min
-        self.pollution_var.constrain(0, self.mesh.facesFront) # Z-bottom
-        self.pollution_var.constrain(0, self.mesh.facesBack)  # Z-top
         self.pollution_var.constrain(0, self.mesh.facesLeft) #X-min
         self.pollution_var.constrain(0, self.mesh.facesRight) #X-Max
 
+        self.pollution_var.constrain(0, self.mesh.facesUp) #Y-max
+        self.pollution_var.constrain(0, self.mesh.facesDown) #Y-Min
+
+
+        self.pollution_var.constrain(0, self.mesh.facesFront) #Z-max
+        self.pollution_var.constrain(0, self.mesh.facesBottom) #Z-Min
+
         # Define the transient convection-diffusion equation
         diffusion_term = DiffusionTerm(coeff=self.diffusion_coef)
-        convection_term = PowerLawConvectionTerm(coeff=self.convection_coef)
+        convection_term = PowerLawConvectionTerm(coeff=velocity)
         
         self.eq = TransientTerm() == diffusion_term - convection_term + self.source
+
 
 
 
@@ -88,8 +103,17 @@ class PollutionPDE:
             Float: residual error.
         """
 
+        self.eq.cacheMatrix()
+        self.eq.cacheRHSvector()
+        self.pollution_var.updateOld()
         res = self.eq.sweep(var=self.get_variable(), dt=dt)
         return res
+
+    def get_eq_matrix(self):
+        return self.eq.matrix.numpyArray
+
+    def get_eq_rhsVector(self):
+        return self.eq.RHSvector
 
     def get_mesh(self) -> Grid3D:
         """

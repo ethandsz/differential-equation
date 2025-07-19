@@ -1,3 +1,4 @@
+
 from operator import index
 
 from torch.cuda import device_count
@@ -14,7 +15,7 @@ from torch import Tensor                  # tensor node in the computation graph
 import torch.nn as nn                     # neural networks
 import torch.optim as optim               # optimizers e.g. gradient descent, ADAM, etc.
 
-from PollutionPDE1D import PollutionPDE1D
+from PollutionPDE2D import PollutionPDE2D
 from torch.utils.data import Dataset, DataLoader
 
 
@@ -30,15 +31,15 @@ class PollutionDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        (x, t), c = self.data[idx]
-        return torch.tensor([x, t], dtype=torch.float32), torch.tensor(c, dtype=torch.float32)
+        (x, y, t), c = self.data[idx]
+        return torch.tensor([x, y, t], dtype=torch.float32), torch.tensor(c, dtype=torch.float32)
 
 
-class PINN_1D(nn.Module):
+class PINN_2D(nn.Module):
     def __init__(self):
-        super(PINN_1D, self).__init__()
+        super(PINN_2D, self).__init__()
         self.hidden = nn.Sequential(
-            nn.Linear(2,64),
+            nn.Linear(3,64),
             nn.Tanh(),
             nn.Linear(64,64),
             nn.Tanh(),
@@ -65,7 +66,7 @@ def denormalize_c(c_norm, c_min, c_max):
 
 
 def generate_bc_inputs(axis_idx, value, device):
-    bc_face = torch.rand(NUM_CELLS * 100, 2).to(device)
+    bc_face = torch.rand(NUM_CELLS * 100, 3).to(device)
     bc_face[:,axis_idx] = value
     return bc_face
 
@@ -76,31 +77,43 @@ def pde_residual(coords, model, c_min, c_max):
 
 
     data_size = coords.shape[0]
-    scaling_factor = data_size/NUM_CELLS
+    scaling_factor = data_size/NUM_CELLS**2
 
     grads = autograd.grad(c_physical, coords, grad_outputs=torch.ones_like(c_physical), create_graph=True)[0]
     c_x = grads[:,0]
-    c_t = grads[:,1]
+    c_y = grads[:,1]
+    c_t = grads[:,2]
 
     grads_x = autograd.grad(c_x, coords, grad_outputs=torch.ones_like(c_x), create_graph=True)[0]
     c_xx = grads_x[:,0]
 
-    delta = model.delta.abs().squeeze()  
-    nabla = model.nabla.abs().squeeze()  
+    grads_y = autograd.grad(c_y, coords, grad_outputs=torch.ones_like(c_y), create_graph=True)[0]
+    c_yy = grads_y[:,1]
 
-    v = 1.0
+
+    delta = model.delta.abs().squeeze()  
+
+    vx = 10.0
+    vy = 0.0
 
     source = torch.zeros_like(c_t)
     # print(coords.shape)
-    x_idxs = (coords[:,0] * (NUM_CELLS-1))
-    print(x_idxs)
+    x = coords[:, 0] 
+    y = coords[:, 1]
     # print(torch.max(x_idxs))
-    
-    source_region = 0.2
-    source[x_idxs*scaling_factor < source_region * data_size] = 20
+
+
+    center_x = 0.1
+    center_y = 0.5
+    radius = 0.05  # adjust as needed
+
+    distance_squared = (x - center_x)**2 + (y - center_y)**2
+    source_region = distance_squared < radius**2
+
+    source[source_region] = 20
     # print(source.shape)
 
-    residual = c_t + v * c_x - delta * c_xx - source
+    residual = c_t + ((vx * c_x) + (vy * c_y)) - delta * (c_xx + c_yy) - source
     return torch.mean(residual**2)
 
 if __name__ == "__main__":
@@ -115,39 +128,76 @@ if __name__ == "__main__":
     start_idx = 0
     end_idx = 100
     dt = 1/60
-    all_values = np.load("1d-data.npy")
-    training_data = all_values[start_idx:end_idx,0:19]
-    print(training_data)
-    c_min = np.min(training_data)
-    c_max = np.max(training_data)
+    all_values = np.load("2d-data.npy")
+    training_data = []
+
+
+    x_min_training_points = 0
+    x_max_training_points = 35
+
+    y_min_training_points = 45
+    y_max_training_points = 55
+
+    view_data = False
+    for timestep, gt_data in enumerate(all_values):
+        data_2d = gt_data.reshape(NUM_CELLS, NUM_CELLS)
+        solution_points = data_2d[y_min_training_points:y_max_training_points, x_min_training_points:x_max_training_points]
+        if(view_data):
+            x = np.arange(x_min_training_points, x_max_training_points, 1)
+            y = np.arange(y_min_training_points, y_max_training_points, 1)
+            print(x.shape)
+            print(y.shape)
+            X, Y = np.meshgrid(x, y)
+            plt.figure(figsize=(6, 5))
+            cp = plt.contourf(X, Y, solution_points, cmap='viridis')
+            plt.colorbar(cp, label='Concentration')
+            plt.title(f'Advection–Diffusion solution at t={timestep}')
+            plt.xlabel('x')
+            plt.ylabel('y')
+            plt.show()
+        training_data.append([timestep, solution_points])
+        # training_data[timestep, :] = data_2d[0:100, 0:50].flatten()
+        
+    # training_data = all_values[start_idx:end_idx,:]
+    training_points = [item[1] for item in training_data]
+    training_points = np.array(training_points)
+    print(training_points.shape)
+    c_min = np.min(training_points)
+    c_max = np.max(training_points)
+    print(c_min, c_max)
 
     t_min = start_idx * dt
     t_max = end_idx * dt
 
+
     data = []
-    # all_values[4,:]
 
-    for step, _ in enumerate(training_data):
-        for idx, value in enumerate(training_data[step]):
-            if(idx % 2 == 0):
-            #
-                physical_c = value
-                normalized_c = normalize_c(physical_c, c_min, c_max) 
-                x_normalized = idx / (NUM_CELLS-1)
-                timestep = (step+start_idx) * dt
-                t_normalized = (timestep - t_min) / (t_max - t_min)
+    for timestep, data_2d in training_data:
+        timestep_real = timestep + start_idx  # because we used enumerate on sliced data
+        t = timestep_real * dt
+        t_norm = (t - t_min) / (t_max - t_min)
 
-                data.append(((x_normalized, t_normalized), normalized_c))
-        # print(step * dt)
+        ny, nx = data_2d.shape   # should be (100, 50)
+
+        for iy in range(ny):
+            for ix in range(nx):
+                # normalize spatial coordinates
+                x_norm = (ix + x_min_training_points) / (NUM_CELLS - 1)
+                y_norm = (iy + y_min_training_points) / (NUM_CELLS - 1)
+
+                c = data_2d[iy, ix]
+                c_norm = (c - c_min) / (c_max - c_min)
+
+                data.append(((x_norm, y_norm, t_norm), c_norm))
 
     for d in data:
         print(d)
 
     dataset = PollutionDataset(data)
-    loader = DataLoader(dataset, batch_size=64, shuffle=False)
+    loader = DataLoader(dataset, batch_size=2048, shuffle=False)
 
 
-    model = PINN_1D().to(device)
+    model = PINN_2D().to(device)
 
     # Optimizer for the neural network weights with a smaller learning rate
     optimizer_net = optim.Adam(model.hidden.parameters(), lr=1e-3)
@@ -183,22 +233,35 @@ if __name__ == "__main__":
             for coords, c in loader:
                 coords = coords.to(device)
 
-                initial_conditions = torch.rand(NUM_CELLS * 100, 2).to(device)
-                initial_conditions[:,1] = 0
+                initial_conditions = torch.rand(NUM_CELLS * 100, 3).to(device)
+                initial_conditions[:,2] = 0
                 c_pred_ic = model(initial_conditions)
                 loss_ic = torch.mean(c_pred_ic ** 2)
 
 
-                cell_idxs = 0
+                x_idx = 0
+                y_idx = 1
 
                 min_bc_position = 0
                 max_bc_position = 1
-                c_pred_left = model(generate_bc_inputs(cell_idxs, min_bc_position, device))
-                c_pred_right = model(generate_bc_inputs(cell_idxs, max_bc_position, device))
+
+                bc_left = generate_bc_inputs(x_idx, min_bc_position, device)
+                bc_right = generate_bc_inputs(x_idx, max_bc_position, device)
+
+
+                bc_down = generate_bc_inputs(y_idx, min_bc_position, device)
+                bc_up = generate_bc_inputs(y_idx, max_bc_position, device)
+
+                c_pred_left = model(bc_left)
+                c_pred_right = model(bc_right)
+                c_pred_down = model(bc_down)
+                c_pred_up = model(bc_up)
 
 
                 loss_bc = torch.mean((c_pred_left - torch.full_like(c_pred_left, 0))**2) + \
-                            torch.mean((c_pred_right - torch.full_like(c_pred_right, 0))**2) 
+                            torch.mean((c_pred_right - torch.full_like(c_pred_right, 0))**2)  + \
+                            torch.mean((c_pred_down - torch.full_like(c_pred_down, 0))**2)  + \
+                            torch.mean((c_pred_up - torch.full_like(c_pred_up, 0))**2)
 
 
                 c = c.to(device)
@@ -211,8 +274,9 @@ if __name__ == "__main__":
                 
                 N_collocation = 10000
                 x_colloc = torch.rand(N_collocation, 1).to(device)
+                y_colloc = torch.rand(N_collocation, 1).to(device)
                 t_colloc = torch.rand(N_collocation, 1).to(device)
-                coords_colloc = torch.cat([x_colloc, t_colloc], dim=1)
+                coords_colloc = torch.cat([x_colloc, y_colloc, t_colloc], dim=1)
 
                 pde_loss = pde_residual(coords_colloc, model, c_min, c_max)
 

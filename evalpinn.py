@@ -1,242 +1,103 @@
-from scipy.sparse import coo
+
 import torch
-import torch.nn as nn
 import numpy as np
-import matplotlib.pyplot as plt
-from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm, Viewer, ImplicitSourceTerm, residual
-from fipy.terms.transientTerm import TransientTerm
+import pyvista as pv
+from matplotlib import cm
+from ipinn3d import PINN_3D, denormalize_c  # assume similar to your PINN_2D
 
-from ipinn import PINN, denormalize_c
-from PollutionPDE import PollutionPDE
-
-# ----------------------------------------
-# 1) Re‑define your PINN and load weights
-# ----------------------------------------
-
-TIMESTEP = 0
-
+# ----------------------
+# 1) Load model
+# ----------------------
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = PINN().to(device)
+model = PINN_3D().to(device)
 model.load_state_dict(torch.load("best_model.pth", map_location=device))
 model.eval()
 
-# ----------------------------------------
-# 2) Build the Grid3D and get cell centers
-# ----------------------------------------
+# ----------------------
+# 2) Setup grid and time
+# ----------------------
+NUM_X = 100
+NUM_Y = 100
+NUM_Z = 100
+steps = 25
+dt = 1/60
 
-NUM_CELLS = 25
-L = 1.0
-dx = L / NUM_CELLS
+times = np.arange(0, steps*dt, dt, dtype=np.float32)
+t_min = times[0]
+t_max = times[-1]
 
-# Ground Truth Variables
-diffusionCoef = 0.1
-convectionCoef = (1.0, 0.0, 0.0)
-# ------------------------------
-
-pde_problem = PollutionPDE(
-        num_cells=NUM_CELLS,
-        diffusion_coef=diffusionCoef,
-        convection_coef=convectionCoef
-    )
-
-# 2. Access the components
-var = pde_problem.get_variable()
-eq = pde_problem.get_equation()
-mesh = pde_problem.get_mesh()
-
-x_centers, y_centers, z_centers = mesh.cellCenters  # each is a 1D array of length NUM_CELLS**3
-
-
-# Convert to numpy arrays and reshape to (N, )
-x_np = np.array(x_centers).flatten() * NUM_CELLS  # scale to [0,25]
-y_np = np.array(y_centers).flatten() * NUM_CELLS
-z_np = np.array(z_centers).flatten() * NUM_CELLS
-
-# ----------------------------------------
-# 3) Run inference at t = 73
-# ----------------------------------------
-
-# create torch tensors
-x_t = torch.tensor(x_np, dtype=torch.float32, device=device)
-y_t = torch.tensor(y_np, dtype=torch.float32, device=device)
-z_t = torch.tensor(z_np, dtype=torch.float32, device=device)
-
-times = np.arange(0,300,1/60, dtype=np.float32)
-
-x_pred = np.arange(0,25,1)
-y_pred = np.arange(0,25,1)
-z_pred = np.arange(0,25,1)
-
-fig = plt.figure(figsize=(8,6))
-ax = fig.add_subplot(projection='3d')
-
-
-
-all_values = np.load("tall-data.npy")
-training_data = all_values[4,:]
-print(training_data)
+# ----------------------
+# 3) Load GT data and normalize ranges
+# ----------------------
+all_values = np.load("3d-data.npy")  # shape: (steps, NUM_X*NUM_Y*NUM_Z)
+training_data = all_values[:steps, :]
 c_min = np.min(training_data)
 c_max = np.max(training_data)
 
-cb = None
-plt.ion()
+# ----------------------
+# 4) Prepare coordinate grid (x, y, z)
+# ----------------------
+x_idx = np.arange(NUM_X)
+y_idx = np.arange(NUM_Y)
+z_idx = np.arange(NUM_Z)
 
-for t in times:
-    coords = []
-    for z in z_pred:
-        for y in y_pred:
-            for x in x_pred:
-                coords.append([x,y,z,t])
+x_norm = x_idx / (NUM_X - 1)
+y_norm = y_idx / (NUM_Y - 1)
+z_norm = z_idx / (NUM_Z - 1)
 
-    coords = torch.tensor(coords, device=device, requires_grad=True)
+X_norm, Y_norm, Z_norm = np.meshgrid(x_norm, y_norm, z_norm, indexing='ij')
+coords_xyz = np.stack([X_norm.flatten(), Y_norm.flatten(), Z_norm.flatten()], axis=1)  # (N, 3)
 
+# ----------------------
+# 5) Predict over time
+# ----------------------
+pred_data = np.zeros((steps, NUM_X, NUM_Y, NUM_Z))
+gt_data = []
 
-    # with torch.no_grad():
-    c_t = model(coords).cpu()
-    c_t = denormalize_c(c_t, c_min, c_max )
-    print(c_t.shape)
+# Setup PyVista volume viewer
+grid = pv.ImageData()
+grid.dimensions = np.array([NUM_X, NUM_Y, NUM_Z]) + 1  # +1 for points
+grid.spacing = (1,1,1)
 
-    grads = torch.autograd.grad(
-        outputs=c_t, 
-        inputs=coords,
-        grad_outputs=torch.ones_like(c_t),  # usually ones
-        create_graph=True  # so we can take further derivatives later if needed
-    )[0]
+plotter = pv.Plotter()
 
+plotter.show_bounds(grid='back', location='outer', all_edges=True, font_size=16, color='black')
+actor = None
+plotter.add_axes()
 
-    c_x = grads[:, 0]
-    c_y = grads[:, 1]
-    c_z = grads[:, 2]
-
-    c_wrt_t = grads[:, 3]
-
-    grads_x = torch.autograd.grad(
-        c_x, coords,
-        grad_outputs=torch.ones_like(c_x),
-        create_graph=True
-    )[0]
-    c_xx = grads_x[:, 0] 
-
-    grads_y = torch.autograd.grad(
-        c_y, coords,
-        grad_outputs=torch.ones_like(c_y),
-        create_graph=True
-    )[0]
-    c_yy = grads_y[:, 1]
-
-    grads_z = torch.autograd.grad(
-        c_z, coords,
-        grad_outputs=torch.ones_like(c_z),
-        create_graph=True
-    )[0]
-    c_zz = grads_z[:, 2]
-
-
-
-    sum_cx = torch.sum(c_x)
-    sum_cy = torch.sum(c_y)
-    sum_cz = torch.sum(c_z)
-
-
-    sum_cxx = torch.sum(c_xx)
-    sum_cyy = torch.sum(c_yy)
-    sum_czz = torch.sum(c_zz)
-
-    print(f"Sum of c_x {sum_cx} shape of c_x {c_x.shape}")
-    print(f"Sum of c_y {sum_cy} shape of c_y {c_y.shape}")
-    print(f"Sum of c_z {sum_cz} shape of c_z {c_z.shape}")
-    print(f"Sum of c_t {torch.sum(c_wrt_t)} shape of c_z {c_wrt_t.shape}")
-
-    print(f"Sum of c_xx {sum_cxx} shape of c_xx {c_xx.shape}")
-    print(f"Sum of c_yy {sum_cyy} shape of c_yy {c_yy.shape}")
-    print(f"Sum of c_zz {sum_czz} shape of c_zz {c_zz.shape}")
-
-    print(f"Sum of laplacian (total) {sum_cxx + sum_cyy + sum_czz}")
-
-    pde_problem = PollutionPDE(
-            num_cells=NUM_CELLS,
-            diffusion_coef=0.6,
-            convection_coef=(1.0,0.0,0.0)
-        )
-
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    source = torch.tensor(pde_problem.get_source().value)
-
-    print(f"Sum of source {torch.sum(source)} shape of source {source.shape}")
+for idx, t in enumerate(times):
+    print(f"Timestep {idx+1}/{steps}")
+    t_norm = (t - t_min) / (t_max - t_min)
+    t_column = np.full((coords_xyz.shape[0], 1), t_norm, dtype=np.float32)
     
-    idx = 0
+    coords = np.hstack([coords_xyz, t_column])  # (N,4)
 
-    laplacian = c_xx[idx] + c_yy[idx] + c_zz[idx]
+    coords_tensor = torch.tensor(coords, device=device, dtype=torch.float32)
+    with torch.no_grad():
+        c_t = model(coords_tensor).cpu().numpy().flatten()
+    c_t = denormalize_c(c_t, c_min, c_max)
 
+    c_t_3d = c_t.reshape(NUM_X, NUM_Y, NUM_Z, order='F')  # shape matches UniformGrid
+    pred_data[idx, :, :, :] = c_t_3d
+    c_t_3d[c_t_3d <= 1e-6] = 0
 
-    print(f"Sum of laplacian {laplacian}")
-    print(f"source {source[idx]}")
-    print(f"C-wrt[{idx}] {c_wrt_t[idx]}")
-    print(f"C-x[{idx}] {c_x[idx]}")
-    print(f"C-y[{idx}] {c_y[idx]}")
-    print(f"C-z[{idx}] {c_z[idx]}")
-    
+    # GT
+    gt_t_flat = all_values[idx]
+    gt_t_3d = gt_t_flat.reshape(NUM_X, NUM_Y, NUM_Z, order='F')
+    gt_data.append(gt_t_3d)
 
-    residual = c_wrt_t[idx] - 0.6*(laplacian) + c_x[idx] 
-    print(f"Residual = {c_wrt_t[idx]} - {0.6*laplacian} + {c_x[idx]}")
-    print(f"Sum of residual {residual}")
+    # Update visualization
+    grid.cell_data["concentration"] = c_t_3d.flatten()
+    # grid.cell_data["concentration"] = gt_t_3d.flatten(order='F')
 
-    c_t = c_t.detach().numpy()
+    if actor is None:
+        actor = plotter.add_volume(grid, scalars="concentration", cmap='viridis')
+    else:
+        plotter.remove_actor(actor)
+        actor = plotter.add_volume(grid, scalars="concentration", cmap='viridis')
 
+    plotter.add_text(f"Time step {idx}", font_size=12)
+    plotter.show(auto_close=False, interactive_update=True)
+    plotter.render()
 
-
-
-
-    predicted_var = CellVariable(name="pred_poll", mesh=mesh, value=c_t)
-    # eq.solve(var=var, dt=1)
-    residual = eq.justResidualVector(var=predicted_var, dt=t)
-    residual = np.array(residual)
-    print(f"Sum of residual error: {np.sum(residual)}")
-    residual_norm = np.linalg.norm(residual)
-    print(f"Sum of residual error (normalized): {residual_norm}")
-
-# ----------------------------------------
-# 4) Plot in 3D (Matplotlib scatter), filtering below threshold
-# ----------------------------------------
-
-    POLLUTANT_DETECTION_THRESHOLD = 5e-3
-
-# filter
-    mask = c_t >= POLLUTANT_DETECTION_THRESHOLD
-    x_plot = x_np[mask]
-    y_plot = y_np[mask]
-    z_plot = z_np[mask]
-    c_plot = c_t[mask]
-
-# 4) Clear old axes and colorbar
-    ax.clear()
-    if cb is not None:
-        cb.remove()
-
-    # 5) Plot updated scatter
-    sc = ax.scatter(x_plot, y_plot, z_plot,
-                    c=c_plot,
-                    cmap='plasma',
-                    s=20)
-    ax.set_xlim(0, NUM_CELLS)
-    ax.set_ylim(0, NUM_CELLS)
-    ax.set_zlim(0, NUM_CELLS)
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_title(f"Predicted plume at t={t:.2f}")
-
-    # 6) Update colorbar
-    cb = fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.1)
-    cb.set_label('Concentration')
-
-    # 7) Draw and pause
-    plt.draw()
-    plt.pause(0.001)
-
-    # 8) Wait for user to press Enter before next step
-    input("Next timestep:")
-
-# turn off interactive
-plt.ioff()
+    input("Press Enter to continue to next timestep...")

@@ -155,7 +155,7 @@ plt.show()
 
 # --- Calculate the error (if not already done) ---
 ground_truth_slice = ground_truth[start_idx:end_idx, :]
-error = ground_truth - data 
+error = ground_truth[0:steps] - data 
 
 # --- Create the 2D heatmap for the error ---
 fig_hm, ax_hm = plt.subplots()
