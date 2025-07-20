@@ -40,15 +40,17 @@ class PINN_3D(nn.Module):
     def __init__(self):
         super(PINN_3D, self).__init__()
         self.hidden = nn.Sequential(
-            nn.Linear(4,64),
+            nn.Linear(4,128),
             nn.Tanh(),
-            nn.Linear(64,64),
+            nn.Linear(128,128),
             nn.Tanh(),
-            nn.Linear(64,64),
+            nn.Linear(128,128),
             nn.Tanh(),
-            nn.Linear(64,64),
+            nn.Linear(128,128),
             nn.Tanh(),
-            nn.Linear(64,1),
+            nn.Linear(128,128),
+            nn.Tanh(),
+            nn.Linear(128,1),
         )
         self.delta = nn.Parameter(torch.tensor([[0.1]]))
         self.nabla = nn.Parameter(torch.tensor([[2.0]]))
@@ -145,14 +147,14 @@ if __name__ == "__main__":
 
 
     x_min_training_points = 0
-    x_max_training_points = 25
+    x_max_training_points = 20
 
-    y_min_training_points = 30
-    y_max_training_points = 70
+    y_min_training_points = 40
+    y_max_training_points = 60
 
 
-    z_min_training_points = 30
-    z_max_training_points = 70
+    z_min_training_points = 40
+    z_max_training_points = 60
 
     view_data = False
     for timestep, gt_data in enumerate(all_values):
