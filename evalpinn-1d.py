@@ -19,7 +19,7 @@ TIMESTEP = 0
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = PINN_1D().to(device)
-model.load_state_dict(torch.load("best_model.pth", map_location=device))
+model.load_state_dict(torch.load("best_model_1d.pth", map_location=device))
 model.eval()
 
 # ----------------------------------------

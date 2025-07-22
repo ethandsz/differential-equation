@@ -2,7 +2,7 @@
 import torch
 import numpy as np
 import pyvista as pv
-from matplotlib import cm
+import matplotlib.pyplot as plt
 from ipinn3d import PINN_3D, denormalize_c  # assume similar to your PINN_2D
 
 # ----------------------
@@ -65,6 +65,7 @@ plotter.show_bounds(grid='back', location='outer', all_edges=True, font_size=16,
 actor = None
 plotter.add_axes()
 
+
 for idx, t in enumerate(times):
     print(f"Timestep {idx+1}/{steps}")
     t_norm = (t - t_min) / (t_max - t_min)
@@ -83,7 +84,7 @@ for idx, t in enumerate(times):
 
     # GT
     gt_t_flat = all_values[idx]
-    gt_t_3d = gt_t_flat.reshape(NUM_X, NUM_Y, NUM_Z, order='F')
+    gt_t_3d = gt_t_flat.reshape(NUM_X, NUM_Y, NUM_Z)
     gt_data.append(gt_t_3d)
 
     # Update visualization
@@ -96,8 +97,48 @@ for idx, t in enumerate(times):
         plotter.remove_actor(actor)
         actor = plotter.add_volume(grid, scalars="concentration", cmap='viridis')
 
-    plotter.add_text(f"Time step {idx}", font_size=12)
+    plotter.add_text(f"Time step {idx}", font_size=12, name="timestep")
     plotter.show(auto_close=False, interactive_update=True)
     plotter.render()
 
-    input("Press Enter to continue to next timestep...")
+    input("Next timestep")
+
+    
+gt_data = np.array(gt_data)
+
+for t in range(steps):
+    error = gt_data[t] - pred_data[t]
+    mean_error_z = np.mean(error, axis=2)
+    
+    fig, ax = plt.subplots(figsize=(8,6))
+    im = ax.imshow(mean_error_z, origin='lower', cmap='inferno', 
+                   aspect='auto')
+    cbar = fig.colorbar(im, ax=ax, shrink=0.8)
+    cbar.set_label('Mean error over z', fontsize=12)
+    ax.set_title(f'Mean error projection on x-y plane (t={t})', fontsize=14)
+    ax.set_xlabel('X', fontsize=12)
+    ax.set_ylabel('Y', fontsize=12)
+    ax.grid(False)
+    plt.tight_layout()
+    plt.show()
+    
+    # Histogram of absolute errors
+    fig, ax = plt.subplots(figsize=(8,6))
+    ax.hist(np.abs(error).ravel(), bins=50, color='steelblue', edgecolor='black', alpha=0.7)
+    ax.set_xlabel('Absolute error', fontsize=12)
+    ax.set_ylabel('Frequency', fontsize=12)
+    ax.set_title(f'Error distribution at t={t}', fontsize=14)
+    ax.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.show()
+    
+    # Boxplot of absolute errors
+    fig, ax = plt.subplots(figsize=(6,6))
+    ax.boxplot(np.abs(error).ravel(), vert=True, patch_artist=True,
+               boxprops=dict(facecolor='lightcoral', color='black'),
+               medianprops=dict(color='black'))
+    ax.set_ylabel('Absolute error', fontsize=12)
+    ax.set_title(f'Boxplot of absolute errors at t={t}', fontsize=14)
+    ax.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.show()

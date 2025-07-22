@@ -9,10 +9,10 @@ import numpy as np
 from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm, Viewer, ImplicitSourceTerm
 from fipy.terms.transientTerm import TransientTerm
 import torch
-import torch.autograd as autograd         # computation graph
-from torch import Tensor                  # tensor node in the computation graph
-import torch.nn as nn                     # neural networks
-import torch.optim as optim               # optimizers e.g. gradient descent, ADAM, etc.
+import torch.autograd as autograd         
+from torch import Tensor                 
+import torch.nn as nn                   
+import torch.optim as optim            
 
 from PollutionPDE1D import PollutionPDE1D
 from torch.utils.data import Dataset, DataLoader
@@ -23,7 +23,7 @@ NUM_CELLS = 100
 
 class PollutionDataset(Dataset):
     def __init__(self, data):
-        # data: list of ((x, y, z), c)
+        # data: list of ((x, y, z, t), c) in this case just x t and c
         self.data = data
 
     def __len__(self):
@@ -149,9 +149,10 @@ if __name__ == "__main__":
 
     model = PINN_1D().to(device)
 
-    # Optimizer for the neural network weights with a smaller learning rate
+    #optimizer for the neural network weights with a smaller learning rate
     optimizer_net = optim.Adam(model.hidden.parameters(), lr=1e-3)
-    # Optimizer specifically for the delta parameter with a LARGER learning rate
+
+    #ptimizer specifically for the delta parameter 
     optimizer_pde_coefs = optim.Adam([model.delta, model.nabla], lr=1e-3)
 
     # Hyperparameters
@@ -248,7 +249,7 @@ if __name__ == "__main__":
 
             if epoch_loss < best_loss:
                 best_loss = epoch_loss
-                torch.save(model.state_dict(), 'best_model.pth')
+                torch.save(model.state_dict(), 'best_model_1d.pth')
                 print(f"Best model saved at epoch {epoch+1} with val loss {epoch_loss:.4f}")
 
         total_time = time.time() - start_time

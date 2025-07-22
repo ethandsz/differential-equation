@@ -82,6 +82,7 @@ for step in range(steps):
     start_time = time.time()
     var.updateOld()
     data[step, :] = var.value
+
     residual = pde_problem.sweep_eq(dt)
     print(f"Step {step}: Time taken: {time.time() - start_time:.4f} seconds | Residual error: {residual}")
 
@@ -95,6 +96,8 @@ for step in range(steps):
 
     # Render
     plotter.render()
+
+    input("Next timestep")
 
 
 np.save("3d-data.npy", data)

@@ -312,7 +312,7 @@ if __name__ == "__main__":
 
             if epoch_loss < best_loss:
                 best_loss = epoch_loss
-                torch.save(model.state_dict(), 'best_model.pth')
+                torch.save(model.state_dict(), 'best_model_2d.pth')
                 print(f"Best model saved at epoch {epoch+1} with val loss {epoch_loss:.4f}")
 
         total_time = time.time() - start_time

@@ -92,6 +92,7 @@ for step in range(steps):
         cb.remove()
     ax.clear()
     cf = ax.contourf(X, Y, Z, levels=20, cmap='viridis')
+    ax.scatter(50,50, c='red', s=12)
     cb = plt.colorbar(cf, label='Concentration')
     plt.draw()
     plt.pause(0.001)
