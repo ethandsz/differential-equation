@@ -49,7 +49,8 @@ class PINN_1D(nn.Module):
             nn.Linear(64,1),
         )
         self.delta = nn.Parameter(torch.tensor([[0.1]]))
-        self.nabla = nn.Parameter(torch.tensor([[2.0]]))
+        self.region = nn.Parameter(torch.tensor([[0.9]]))
+        self.strength = nn.Parameter(torch.tensor([[10.0]]))
 
     def forward(self, coords):
         # print("Forwarding ", coords)
@@ -85,30 +86,42 @@ def pde_residual(coords, model, c_min, c_max):
     grads_x = autograd.grad(c_x, coords, grad_outputs=torch.ones_like(c_x), create_graph=True)[0]
     c_xx = grads_x[:,0]
 
-    delta = model.delta.abs().squeeze()  
-    nabla = model.nabla.abs().squeeze()  
+    delta = model.delta.squeeze()  
 
     v = 1.0
 
     source = torch.zeros_like(c_t)
     # print(coords.shape)
     x_idxs = (coords[:,0] * (NUM_CELLS-1))
-    print(x_idxs)
     # print(torch.max(x_idxs))
     
-    source_region = 0.2
-    source[x_idxs*scaling_factor < source_region * data_size] = 20
-    # print(source.shape)
+    # source_region = 0.2
+    # source[x_idxs*scaling_factor < source_region * data_size] = model.strength.squeeze()
 
-    residual = c_t + v * c_x - delta * c_xx - source
+    alpha = 50.0
+    x_norm = coords[:,0]  # already in [0,1]
+
+    indicator = torch.sigmoid( alpha * (model.region - x_norm) )
+    # continuous source
+    source = model.strength * indicator
+
+
+
+    residual = c_t + v * c_x - delta * c_xx - source #(source_strength * predicted_booleans)
+    # print(f"Residual with the right source: {torch.sum(residual_right_source)}")
+    # print(f"Residual with the learned source: {torch.sum(residual)}")
     return torch.mean(residual**2)
+
 
 if __name__ == "__main__":
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print(device)
+#----------------------------------------------------------------------------------------------------
 
+
+#----------------------------------------------------------------------------------------------------
     if device == 'cuda': 
         print(torch.cuda.get_device_name()) 
 
@@ -116,7 +129,7 @@ if __name__ == "__main__":
     end_idx = 100
     dt = 1/60
     all_values = np.load("1d-data.npy")
-    training_data = all_values[start_idx:end_idx,0:19]
+    training_data = all_values[start_idx:end_idx,0:30]
     print(training_data)
     c_min = np.min(training_data)
     c_max = np.max(training_data)
@@ -153,10 +166,10 @@ if __name__ == "__main__":
     optimizer_net = optim.Adam(model.hidden.parameters(), lr=1e-3)
 
     #ptimizer specifically for the delta parameter 
-    optimizer_pde_coefs = optim.Adam([model.delta, model.nabla], lr=1e-3)
+    optimizer_pde_coefs = optim.Adam([model.delta, model.region, model.strength], lr=1e-3)
 
     # Hyperparameters
-    num_epochs = 22000
+    num_epochs = 35000
 
 
     print("Starting training...")
@@ -165,7 +178,8 @@ if __name__ == "__main__":
     pde_loss_over_time = []
     data_loss_over_time = []
     delta_values_over_time = []
-    nabla_values_over_time = []
+    region_values_over_time = []
+    stength_values_over_time = []
 
     best_loss = float('inf')
 
@@ -217,6 +231,7 @@ if __name__ == "__main__":
 
                 pde_loss = pde_residual(coords_colloc, model, c_min, c_max)
 
+
                 loss = (100 * data_loss) + (100 *loss_bc) + (100 * loss_ic) + pde_loss
                 loss.backward()
                 optimizer_pde_coefs.step()
@@ -233,7 +248,8 @@ if __name__ == "__main__":
             pde_loss_over_time.append(pde_loss_total)
             data_loss_over_time.append(data_loss_total)
             delta_values_over_time.append(model.delta.item())
-            nabla_values_over_time.append(model.nabla.item())
+            region_values_over_time.append(model.region.item())
+            stength_values_over_time.append(model.strength.item())
                
 
             epoch_end_time = time.time()
@@ -242,10 +258,11 @@ if __name__ == "__main__":
                   f"Loss: {epoch_loss:.6f} | "
                   f"Loss Pde: {pde_loss_total:.6f} | "
                   f"Loss Data: {data_loss_total:.6f} | "
-                f"Epoch time (s): {(epoch_end_time - epoch_start_time):.1f} | "
+                  f"Epoch time (s): {(epoch_end_time - epoch_start_time):.1f} | "
                   f"Time Left: {(((epoch_end_time - epoch_start_time) * (num_epochs - epoch))/3600):2f} hours | "
                   f"Delta: {model.delta.item():.6f} | "
-                  f"Nabla: {model.nabla.item():.6f} | ")
+                  f"Region: {model.region.item():.6f} | "
+                  f"Stength {model.strength.item():.6f}")
 
             if epoch_loss < best_loss:
                 best_loss = epoch_loss
@@ -275,10 +292,11 @@ if __name__ == "__main__":
 
 # Plot delta values separately
         axs[1].plot(delta_values_over_time, label='Delta Parameter', color='tab:green')
-        axs[1].plot(nabla_values_over_time, label='Nabla Parameter', color='tab:red')
+        axs[1].plot(region_values_over_time, label='Region Parameter', color='tab:blue')
+        axs[1].plot(stength_values_over_time, label='Strength Parameter', color='tab:red')
         axs[1].set_xlabel('Epoch')
-        axs[1].set_ylabel('Delta & Nabla Values')
-        axs[1].set_title('Delta & Nabla Parameters Over Time')
+        axs[1].set_ylabel('Model Parameter Values')
+        axs[1].set_title('Model Parameters Over Time')
         axs[1].legend()
         axs[1].grid(True)
 

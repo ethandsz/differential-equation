@@ -100,4 +100,4 @@ for step in range(steps):
     input("Next timestep")
 
 
-np.save("3d-data.npy", data)
+# np.save("3d-data.npy", data)

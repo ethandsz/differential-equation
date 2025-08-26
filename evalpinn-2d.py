@@ -10,7 +10,7 @@ from ipinn2d import PINN_2D, denormalize_c
 # ----------------------
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = PINN_2D().to(device)
-model.load_state_dict(torch.load("best_model.pth", map_location=device))
+model.load_state_dict(torch.load("best_model_2d.pth", map_location=device))
 model.eval()
 
 # ----------------------

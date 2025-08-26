@@ -2,22 +2,17 @@
 from operator import index
 
 from torch.cuda import device_count
-from utils import get_cartesian_concentration, get_cartesian_value
 import time
 import matplotlib.pyplot as plt
 import argparse
 import numpy as np
-from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm, Viewer, ImplicitSourceTerm
-from fipy.terms.transientTerm import TransientTerm
 import torch
 import torch.autograd as autograd         # computation graph
 from torch import Tensor                  # tensor node in the computation graph
 import torch.nn as nn                     # neural networks
 import torch.optim as optim               # optimizers e.g. gradient descent, ADAM, etc.
 
-from PollutionPDE2D import PollutionPDE2D
 from torch.utils.data import Dataset, DataLoader
-
 
 NUM_TIMESTEPS = 300
 NUM_CELLS = 100
@@ -50,7 +45,8 @@ class PINN_2D(nn.Module):
             nn.Linear(64,1),
         )
         self.delta = nn.Parameter(torch.tensor([[0.1]]))
-        self.nabla = nn.Parameter(torch.tensor([[2.0]]))
+        self.source_center = nn.Parameter(torch.tensor([0.7, 0.1]))
+        self.source_radius = nn.Parameter(torch.tensor(0.05))
 
     def forward(self, coords):
         # print("Forwarding ", coords)
@@ -103,15 +99,22 @@ def pde_residual(coords, model, c_min, c_max):
     # print(torch.max(x_idxs))
 
 
-    center_x = 0.1
-    center_y = 0.5
-    radius = 0.05  # adjust as needed
+    # GT Values
+    # center_x = 0.1
+    # center_y = 0.5
+    # radius = 0.05  # adjust as needed
 
-    distance_squared = (x - center_x)**2 + (y - center_y)**2
-    source_region = distance_squared < radius**2
-
-    source[source_region] = 20
+    # distance_squared = (x - model.source_center[0])**2 + (y - model.source_center[1])**2
+    # source_region = distance_squared < model.source_radius**2
+    #
+    # source[source_region] = 20
     # print(source.shape)
+
+    # dist_sq = (x - model.source_center[0])**2 + (y - model.source_center[1])**2
+    dist_sq = (x - model.source_center[0])**2 + (y - model.source_center[1])**2
+    scale = 1000.0
+    source = 20 * torch.sigmoid(scale * (model.source_radius**2 - dist_sq))
+    # source = 20 * (dist_sq < model.source_radius**2).float()
 
     residual = c_t + ((vx * c_x) + (vy * c_y)) - delta * (c_xx + c_yy) - source
     return torch.mean(residual**2)
@@ -133,10 +136,10 @@ if __name__ == "__main__":
 
 
     x_min_training_points = 0
-    x_max_training_points = 35
+    x_max_training_points = 70
 
-    y_min_training_points = 45
-    y_max_training_points = 55
+    y_min_training_points = 15
+    y_max_training_points = 85
 
     view_data = False
     for timestep, gt_data in enumerate(all_values):
@@ -177,18 +180,22 @@ if __name__ == "__main__":
         t = timestep_real * dt
         t_norm = (t - t_min) / (t_max - t_min)
 
-        ny, nx = data_2d.shape   # should be (100, 50)
 
-        for iy in range(ny):
-            for ix in range(nx):
-                # normalize spatial coordinates
-                x_norm = (ix + x_min_training_points) / (NUM_CELLS - 1)
-                y_norm = (iy + y_min_training_points) / (NUM_CELLS - 1)
+        ny, nx = data_2d.shape
+        k = 1000# number of random points per timestep
 
-                c = data_2d[iy, ix]
-                c_norm = (c - c_min) / (c_max - c_min)
+        total_points = ny * nx
+        flat_indices = np.random.choice(total_points, k, replace=False)
+        ys, xs = np.unravel_index(flat_indices, (ny, nx))
 
-                data.append(((x_norm, y_norm, t_norm), c_norm))
+        for iy, ix in zip(ys, xs):
+            x_norm = (ix + x_min_training_points) / (NUM_CELLS - 1)
+            y_norm = (iy + y_min_training_points) / (NUM_CELLS - 1)
+
+            c = data_2d[iy, ix]
+            c_norm = (c - c_min) / (c_max - c_min)
+
+            data.append(((x_norm, y_norm, t_norm), c_norm))
 
     for d in data:
         print(d)
@@ -202,7 +209,7 @@ if __name__ == "__main__":
     # Optimizer for the neural network weights with a smaller learning rate
     optimizer_net = optim.Adam(model.hidden.parameters(), lr=1e-3)
     # Optimizer specifically for the delta parameter with a LARGER learning rate
-    optimizer_pde_coefs = optim.Adam([model.delta, model.nabla], lr=1e-3)
+    optimizer_pde_coefs = optim.Adam([model.delta, model.source_center, model.source_radius], lr=2e-3)
 
     # Hyperparameters
     num_epochs = 22000
@@ -214,7 +221,9 @@ if __name__ == "__main__":
     pde_loss_over_time = []
     data_loss_over_time = []
     delta_values_over_time = []
-    nabla_values_over_time = []
+    source_center_x_values_over_time = []
+    source_center_y_values_over_time = []
+    source_center_radius_values_over_time = []
 
     best_loss = float('inf')
 
@@ -238,7 +247,6 @@ if __name__ == "__main__":
                 c_pred_ic = model(initial_conditions)
                 loss_ic = torch.mean(c_pred_ic ** 2)
 
-
                 x_idx = 0
                 y_idx = 1
 
@@ -248,7 +256,6 @@ if __name__ == "__main__":
                 bc_left = generate_bc_inputs(x_idx, min_bc_position, device)
                 bc_right = generate_bc_inputs(x_idx, max_bc_position, device)
 
-
                 bc_down = generate_bc_inputs(y_idx, min_bc_position, device)
                 bc_up = generate_bc_inputs(y_idx, max_bc_position, device)
 
@@ -257,12 +264,10 @@ if __name__ == "__main__":
                 c_pred_down = model(bc_down)
                 c_pred_up = model(bc_up)
 
-
                 loss_bc = torch.mean((c_pred_left - torch.full_like(c_pred_left, 0))**2) + \
                             torch.mean((c_pred_right - torch.full_like(c_pred_right, 0))**2)  + \
                             torch.mean((c_pred_down - torch.full_like(c_pred_down, 0))**2)  + \
                             torch.mean((c_pred_up - torch.full_like(c_pred_up, 0))**2)
-
 
                 c = c.to(device)
                 optimizer_net.zero_grad()
@@ -273,14 +278,21 @@ if __name__ == "__main__":
                 data_loss = torch.mean((c_pred - c) ** 2) 
                 
                 N_collocation = 10000
-                x_colloc = torch.rand(N_collocation, 1).to(device)
-                y_colloc = torch.rand(N_collocation, 1).to(device)
-                t_colloc = torch.rand(N_collocation, 1).to(device)
+                x_colloc = torch.linspace(0,1,NUM_CELLS).unsqueeze(1).repeat(1,NUM_CELLS).flatten().unsqueeze(1).to(device)
+                y_colloc = torch.linspace(0,1,NUM_CELLS).repeat(NUM_CELLS).unsqueeze(1).to(device)
+                t_colloc = torch.rand(x_colloc.shape[0],1).to(device)
                 coords_colloc = torch.cat([x_colloc, y_colloc, t_colloc], dim=1)
 
                 pde_loss = pde_residual(coords_colloc, model, c_min, c_max)
 
-                loss = (100 * data_loss) + (100 *loss_bc) + (100 * loss_ic) + pde_loss
+                lambda_penalty = 1000
+                penalty_source_x = torch.relu(0.05 - model.source_center[0]).sum()
+                penalty_source_y = torch.relu(0.05 - model.source_center[1]).sum()
+                penalty_source_radius = torch.relu(0.01 - model.source_radius).sum()
+                penalty_diffusion = torch.relu(0.1 - model.delta).sum()
+                param_penalities = lambda_penalty * (penalty_source_x + penalty_source_y + penalty_source_radius + penalty_diffusion)
+
+                loss = (100 * data_loss) + (100 *loss_bc) + (100 * loss_ic) + pde_loss + param_penalities
                 loss.backward()
                 optimizer_pde_coefs.step()
                 optimizer_net.step()
@@ -292,12 +304,12 @@ if __name__ == "__main__":
                     loss_ic_total += loss_ic.item()
                     epoch_loss += loss.item()
 
-
             pde_loss_over_time.append(pde_loss_total)
             data_loss_over_time.append(data_loss_total)
             delta_values_over_time.append(model.delta.item())
-            nabla_values_over_time.append(model.nabla.item())
-               
+            source_center_x_values_over_time.append(model.source_center[0].item())
+            source_center_y_values_over_time.append(model.source_center[1].item())
+            source_center_radius_values_over_time.append(model.source_radius.item())
 
             epoch_end_time = time.time()
             
@@ -308,7 +320,9 @@ if __name__ == "__main__":
                 f"Epoch time (s): {(epoch_end_time - epoch_start_time):.1f} | "
                   f"Time Left: {(((epoch_end_time - epoch_start_time) * (num_epochs - epoch))/3600):2f} hours | "
                   f"Delta: {model.delta.item():.6f} | "
-                  f"Nabla: {model.nabla.item():.6f} | ")
+                  f"Source center X: {model.source_center[0].item():.6f} | "
+                  f"Source center Y: {model.source_center[1].item():.6f} | "
+                  f"Source radius: {model.source_radius.item():.6f} | ")
 
             if epoch_loss < best_loss:
                 best_loss = epoch_loss
@@ -325,6 +339,12 @@ if __name__ == "__main__":
         pde_loss_over_time = [loss.item() if isinstance(loss, torch.Tensor) else loss for loss in pde_loss_over_time]
         data_loss_over_time = [loss.item() if isinstance(loss, torch.Tensor) else loss for loss in data_loss_over_time]
 
+        np.save("pde_loss.npy", pde_loss_over_time)
+        np.save("data_loss.npy", data_loss_over_time)
+        np.save("delta_values.npy", delta_values_over_time)
+        np.save("source_center_x.npy", source_center_x_values_over_time)
+        np.save("source_center_y.npy", source_center_y_values_over_time)
+        np.save("source_center_radius.npy", source_center_radius_values_over_time)
 # Create a figure with two subplots: losses and delta
         fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
@@ -338,10 +358,12 @@ if __name__ == "__main__":
 
 # Plot delta values separately
         axs[1].plot(delta_values_over_time, label='Delta Parameter', color='tab:green')
-        axs[1].plot(nabla_values_over_time, label='Nabla Parameter', color='tab:red')
+        axs[1].plot(source_center_x_values_over_time, label='Source Center X Parameter', color='tab:red')
+        axs[1].plot(source_center_y_values_over_time, label='Source Center Y Parameter', color='tab:blue')
+        axs[1].plot(source_center_radius_values_over_time, label='Source Center Radius Parameter', color='tab:gray')
         axs[1].set_xlabel('Epoch')
-        axs[1].set_ylabel('Delta & Nabla Values')
-        axs[1].set_title('Delta & Nabla Parameters Over Time')
+        axs[1].set_ylabel('Model Parameter Values')
+        axs[1].set_title('Parameter Values Over Time')
         axs[1].legend()
         axs[1].grid(True)
 

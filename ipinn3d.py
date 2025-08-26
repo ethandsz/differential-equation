@@ -3,13 +3,10 @@
 from operator import index
 
 from torch.cuda import device_count
-from utils import get_cartesian_concentration, get_cartesian_value
 import time
 import matplotlib.pyplot as plt
 import argparse
 import numpy as np
-from fipy import CellVariable, Grid3D, DiffusionTerm, PowerLawConvectionTerm, Viewer, ImplicitSourceTerm
-from fipy.terms.transientTerm import TransientTerm
 import torch
 import torch.autograd as autograd         # computation graph
 from torch import Tensor                  # tensor node in the computation graph
@@ -53,7 +50,8 @@ class PINN_3D(nn.Module):
             nn.Linear(128,1),
         )
         self.delta = nn.Parameter(torch.tensor([[0.1]]))
-        self.nabla = nn.Parameter(torch.tensor([[2.0]]))
+        self.source_center = nn.Parameter(torch.tensor([0.7, 0.1, 0.3]))
+        self.source_radius = nn.Parameter(torch.tensor(0.05))
 
     def forward(self, coords):
         # print("Forwarding ", coords)
@@ -108,23 +106,27 @@ def pde_residual(coords, model, c_min, c_max):
 
     source = torch.zeros_like(c_t)
     # print(coords.shape)
-    x = coords[:, 0] 
+    z = coords[:, 0] 
     y = coords[:, 1]
-    z = coords[:, 2]
-    # print(torch.max(x_idxs))
+    x = coords[:, 2]
+
+    #GT Values
+    # center_x = 0.1
+    # center_y = 0.5
+    # center_z = 0.5
+    # radius = 0.05  # adjust as needed
 
 
-    center_x = 0.1
-    center_y = 0.5
-    center_z = 0.5
-    radius = 0.05  # adjust as needed
 
+    dist_sq = (x - model.source_center[0])**2 + (y - model.source_center[1])**2 + (z - model.source_center[2]) ** 2
+    scale = 1000.0
+    source = 20 * torch.sigmoid(scale * (model.source_radius**2 - dist_sq))
 
-
-    distance_squared = (x - center_x)**2 + (y - center_y)**2 + (z - center_z)**2
-    source_region = distance_squared < radius**2
-
-    source[source_region] = 20
+    #
+    # distance_squared = (x - center_x)**2 + (y - center_y)**2 + (z - center_z)**2
+    # source_region = distance_squared < radius**2
+    #
+    # source[source_region] = 20
     # print(source.shape)
 
     residual = c_t + ((vx * c_x) + (vy * c_y) + (vz * c_z)) - delta * (c_xx + c_yy + c_zz) - source
@@ -140,20 +142,20 @@ if __name__ == "__main__":
         print(torch.cuda.get_device_name()) 
 
     start_idx = 0
-    end_idx = 25
+    end_idx = 50
     dt = 1/60
     all_values = np.load("3d-data.npy")
     training_data = []
 
 
     x_min_training_points = 0
-    x_max_training_points = 20
+    x_max_training_points = 100
 
-    y_min_training_points = 40
-    y_max_training_points = 60
+    y_min_training_points = 30
+    y_max_training_points = 65
 
 
-    z_min_training_points = 40
+    z_min_training_points = 30
     z_max_training_points = 60
 
     view_data = False
@@ -180,21 +182,40 @@ if __name__ == "__main__":
         t = timestep_real * dt
         t_norm = (t - t_min) / (t_max - t_min)
 
-        nx, ny, nz = data_3d.shape   # should be (100, 50)
-        print(f"Ny: {ny}, Nx: {nx}, Nz: {nz}")
 
-        for ix in range(nx):
-            for iy in range(ny):
-                for iz in range(nz):
-                    # normalize spatial coordinates
-                    x_norm = (ix + x_min_training_points) / (NUM_CELLS - 1)
-                    y_norm = (iy + y_min_training_points) / (NUM_CELLS - 1)
-                    z_norm = (iz + z_min_training_points) / (NUM_CELLS - 1)
 
-                    c = data_3d[ix, iy, iz]
-                    c_norm = (c - c_min) / (c_max - c_min)
+        nz, ny, nx = data_3d.shape
+        k = 10000# number of random points per timestep
 
-                    data.append(((x_norm, y_norm, z_norm, t_norm), c_norm))
+        total_points = nz * ny * nx
+        flat_indices = np.random.choice(total_points, k, replace=False)
+        zs, ys, xs = np.unravel_index(flat_indices, (nz, ny, nx))
+
+        for iz, iy, ix in zip(zs, ys, xs):
+            x_norm = (ix + x_min_training_points) / (NUM_CELLS - 1)
+            y_norm = (iy + y_min_training_points) / (NUM_CELLS - 1)
+            z_norm = (iz + z_min_training_points) / (NUM_CELLS - 1)
+
+            c = data_3d[iz, iy, ix]
+            c_norm = (c - c_min) / (c_max - c_min)
+
+            data.append(((x_norm, y_norm, z_norm, t_norm), c_norm))
+
+
+
+        #
+        # for ix in range(nx):
+        #     for iy in range(ny):
+        #         for iz in range(nz):
+        #             # normalize spatial coordinates
+        #             x_norm = (ix + x_min_training_points) / (NUM_CELLS - 1)
+        #             y_norm = (iy + y_min_training_points) / (NUM_CELLS - 1)
+        #             z_norm = (iz + z_min_training_points) / (NUM_CELLS - 1)
+        #
+        #             c = data_3d[ix, iy, iz]
+        #             c_norm = (c - c_min) / (c_max - c_min)
+        #
+        #             data.append(((x_norm, y_norm, z_norm, t_norm), c_norm))
 
     for d in data:
         print(d)
@@ -208,7 +229,7 @@ if __name__ == "__main__":
     # Optimizer for the neural network weights with a smaller learning rate
     optimizer_net = optim.Adam(model.hidden.parameters(), lr=1e-3)
     # Optimizer specifically for the delta parameter with a LARGER learning rate
-    optimizer_pde_coefs = optim.Adam([model.delta, model.nabla], lr=1e-3)
+    optimizer_pde_coefs = optim.Adam([model.delta, model.source_center, model.source_radius], lr=2e-3)
 
     # Hyperparameters
     num_epochs = 22000
@@ -220,7 +241,11 @@ if __name__ == "__main__":
     pde_loss_over_time = []
     data_loss_over_time = []
     delta_values_over_time = []
-    nabla_values_over_time = []
+
+    source_center_x_values_over_time = []
+    source_center_y_values_over_time = []
+    source_center_z_values_over_time = []
+    source_center_radius_values_over_time = []
 
     best_loss = float('inf')
 
@@ -287,16 +312,36 @@ if __name__ == "__main__":
 
                 data_loss = torch.mean((c_pred - c) ** 2) 
                 
-                N_collocation = 10000
-                x_colloc = torch.rand(N_collocation, 1).to(device)
-                y_colloc = torch.rand(N_collocation, 1).to(device)
-                z_colloc = torch.rand(N_collocation, 1).to(device)
-                t_colloc = torch.rand(N_collocation, 1).to(device)
+                N_collocation = 10000  # e.g. 10k instead of 1M
+
+                x_colloc = torch.rand(N_collocation, 1, device=device)
+                y_colloc = torch.rand(N_collocation, 1, device=device)
+                z_colloc = torch.rand(N_collocation, 1, device=device)
+                t_colloc = torch.rand(N_collocation, 1, device=device)
+
                 coords_colloc = torch.cat([x_colloc, y_colloc, z_colloc, t_colloc], dim=1)
 
                 pde_loss = pde_residual(coords_colloc, model, c_min, c_max)
 
-                loss = (100 * data_loss) + (100 *loss_bc) + (100 * loss_ic) + pde_loss
+                lambda_penalty = 1000
+                penalty_source_x_lower = torch.relu(0.05 - model.source_center[0]).sum()
+                penalty_source_x_upper = torch.relu(model.source_center[0] - 1.0).sum()
+
+                penalty_source_y_lower = torch.relu(0.05 - model.source_center[1]).sum()
+                penalty_source_y_upper = torch.relu(model.source_center[1] - 1.0).sum()
+
+                penalty_source_z_lower = torch.relu(0.05 - model.source_center[2]).sum()
+                penalty_source_z_upper = torch.relu(model.source_center[2] - 1.0).sum()
+
+                penalty_source_radius_lower = torch.relu(0.01 - model.source_radius).sum()
+                penalty_source_radius_upper = torch.relu(model.source_radius - 0.3).sum()
+
+                penalty_diffusion_lower = torch.relu(0.1 - model.delta).sum()
+                penalty_diffusion_upper = torch.relu(model.delta - 1.0).sum()
+
+                param_penalities = lambda_penalty * (penalty_source_x_lower + penalty_source_x_upper + penalty_source_y_lower + penalty_source_y_upper + penalty_source_z_lower + penalty_source_z_upper + penalty_source_radius_lower + penalty_source_radius_upper + penalty_diffusion_lower + penalty_diffusion_upper)
+
+                loss = (100 * data_loss) + (100 *loss_bc) + (100 * loss_ic) + pde_loss + param_penalities
                 loss.backward()
                 optimizer_pde_coefs.step()
                 optimizer_net.step()
@@ -312,7 +357,11 @@ if __name__ == "__main__":
             pde_loss_over_time.append(pde_loss_total)
             data_loss_over_time.append(data_loss_total)
             delta_values_over_time.append(model.delta.item())
-            nabla_values_over_time.append(model.nabla.item())
+
+            source_center_x_values_over_time.append(model.source_center[0].item())
+            source_center_y_values_over_time.append(model.source_center[1].item())
+            source_center_z_values_over_time.append(model.source_center[2].item())
+            source_center_radius_values_over_time.append(model.source_radius.item())
                
 
             epoch_end_time = time.time()
@@ -324,7 +373,10 @@ if __name__ == "__main__":
                 f"Epoch time (s): {(epoch_end_time - epoch_start_time):.1f} | "
                   f"Time Left: {(((epoch_end_time - epoch_start_time) * (num_epochs - epoch))/3600):2f} hours | "
                   f"Delta: {model.delta.item():.6f} | "
-                  f"Nabla: {model.nabla.item():.6f} | ")
+                  f"Source center X: {model.source_center[0].item():.6f} | "
+                  f"Source center Y: {model.source_center[1].item():.6f} | "
+                  f"Source center Z: {model.source_center[2].item():.6f} | "
+                  f"Source radius: {model.source_radius.item():.6f} | ")
 
             if epoch_loss < best_loss:
                 best_loss = epoch_loss
@@ -341,6 +393,14 @@ if __name__ == "__main__":
         pde_loss_over_time = [loss.item() if isinstance(loss, torch.Tensor) else loss for loss in pde_loss_over_time]
         data_loss_over_time = [loss.item() if isinstance(loss, torch.Tensor) else loss for loss in data_loss_over_time]
 
+        np.save("pde_loss.npy", pde_loss_over_time)
+        np.save("data_loss.npy", data_loss_over_time)
+        np.save("delta_values.npy", delta_values_over_time)
+        np.save("source_center_x.npy", source_center_x_values_over_time)
+        np.save("source_center_y.npy", source_center_y_values_over_time)
+        np.save("source_center_z.npy", source_center_z_values_over_time)
+        np.save("source_center_radius.npy", source_center_radius_values_over_time)
+
 # Create a figure with two subplots: losses and delta
         fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
@@ -354,7 +414,10 @@ if __name__ == "__main__":
 
 # Plot delta values separately
         axs[1].plot(delta_values_over_time, label='Delta Parameter', color='tab:green')
-        axs[1].plot(nabla_values_over_time, label='Nabla Parameter', color='tab:red')
+        axs[1].plot(source_center_x_values_over_time, label='Source Center X Parameter', color='tab:red')
+        axs[1].plot(source_center_y_values_over_time, label='Source Center Y Parameter', color='tab:blue')
+        axs[1].plot(source_center_z_values_over_time, label='Source Center Z Parameter', color='tab:cyan')
+        axs[1].plot(source_center_radius_values_over_time, label='Source Center Radius Parameter', color='tab:gray')
         axs[1].set_xlabel('Epoch')
         axs[1].set_ylabel('Delta & Nabla Values')
         axs[1].set_title('Delta & Nabla Parameters Over Time')

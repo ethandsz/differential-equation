@@ -1,3 +1,5 @@
 
 /practice_stuff
 /__pycache__
+*.npy
+*.pth

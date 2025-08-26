@@ -80,6 +80,7 @@ for step in range(steps):
     plt.pause(0.001)
 
     print(f"Time taken: {time.time() - start_time:.4f} seconds")
+    input("Next timestep")
 
 plt.ioff()
 plt.show()
@@ -110,4 +111,4 @@ ax3d.set_title('Pollutant concentration over time (3D view)')
 fig3d.colorbar(surf, shrink=0.5, aspect=10)
 
 plt.show()
-np.save("1d-data.npy", data)
+# np.save("1d-data.npy", data)
