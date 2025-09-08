@@ -142,9 +142,10 @@ if __name__ == "__main__":
         print(torch.cuda.get_device_name()) 
 
     start_idx = 0
-    end_idx = 50
+    end_idx = 15
     dt = 1/60
-    all_values = np.load("3d-data.npy")
+    all_values = np.load("3d-data.npy")[0:end_idx, :]
+    print(all_values.shape)
     training_data = []
 
 

@@ -1,4 +1,5 @@
 
+import csv, os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,7 +11,7 @@ from ipinn2d import PINN_2D, denormalize_c
 # ----------------------
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = PINN_2D().to(device)
-model.load_state_dict(torch.load("best_model_2d.pth", map_location=device))
+model.load_state_dict(torch.load("models/best_model_2d_1501e-10.pth", map_location=device))
 model.eval()
 
 # ----------------------
@@ -18,7 +19,7 @@ model.eval()
 # ----------------------
 NUM_X = 100     # after slicing: 0:50
 NUM_Y = 100    # after slicing: 0:100
-steps = 100
+steps = 50
 dt = 1/60
 
 times = np.arange(0, steps*dt, dt, dtype=np.float32)
@@ -86,7 +87,7 @@ for idx, t in enumerate(times):
 
     # --- Plot ---
     plt.clf()
-    plt.suptitle(f"timestep {idx} (t={t:.2f})")
+    plt.suptitle(f"Timestep {idx}")
 
     plt.subplot(1,2,1)
     plt.title("Prediction")
@@ -98,16 +99,43 @@ for idx, t in enumerate(times):
     plt.imshow(gt_t_2d, origin='lower', cmap='viridis', aspect='auto')
     plt.colorbar()
 
-    plt.pause(0.01)
+    plt.pause(0.001)
     input("Press Enter to continue")
 
 plt.ioff()
 plt.show()
 
 
+
 # Compute absolute error once
 error = pred_data - gt_data
 error_abs_max = np.max(np.abs(error))
+
+
+# AFTER the prediction loop
+gt_data = np.stack(gt_data, axis=0)            # (steps, ny, nx)
+pred_data = np.asarray(pred_data)              # ensure ndarray
+
+# Errors
+abs_err = np.abs(error)
+print("Abs: ", np.sum(abs_err))
+sq_err = error**2
+
+# Global metrics
+MAE  = abs_err.mean()
+RMSE = np.sqrt(sq_err.mean())
+
+y_true = gt_data.ravel()
+y_pred = pred_data.ravel()
+SSE = np.sum((y_pred - y_true)**2)
+SST = np.sum((y_true - y_true.mean())**2) + 1e-12
+R2  = 1.0 - SSE / SST
+
+print(f"MAE={MAE:.4e}  RMSE={RMSE:.4e}  R2={R2:.4f}")  
+
+print("MAX: ", error_abs_max)
+
+error_abs_max = 0.0023848498414460045
 
 # ------------------------------------
 # A) Existing: mean over y, visualize over (time, x)
@@ -171,3 +199,14 @@ ax3d_x.set_ylabel('y index')
 ax3d_x.set_zlabel('Mean concentration')
 ax3d_x.set_title('Pred vs GT over time (mean along x)')
 plt.show()
+
+
+row = dict(model_tag="model_1500_random_sample",
+           MAE=float(MAE), RMSE=float(RMSE), R2=float(R2))
+os.makedirs("metrics", exist_ok=True)
+csv_path = "metrics/summary.csv"
+write_header = not os.path.exists(csv_path)
+with open(csv_path, "a", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=row.keys())
+    if write_header: w.writeheader()
+    w.writerow(row)
